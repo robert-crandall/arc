@@ -6,6 +6,7 @@ export default {
     "scripts",
     "extras/setup",
     "docs",
+    "test",
     "updates.json",
     "videos",
     "sign.sh",

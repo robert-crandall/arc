@@ -785,6 +785,99 @@ body.pins-collapsed #pinned { display: none; }
 .tab.blank.active .title, .tab.blank.active .favicon { color: var(--fg); }
 #today.only-blank .tab.blank .close { display: none; }
 
+/* ---------- SigmaOS tab lifecycle: subtabs, away slash, lock, clean up ---------- */
+
+.link-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.link-btn.has-work {
+  color: color-mix(in srgb, var(--space) 65%, var(--fg));
+  font-weight: 600;
+}
+
+.tab .subtab-bar {
+  display: none;
+  flex: none;
+  width: 8px;
+  text-align: center;
+  font-weight: 600;
+  color: var(--muted);
+  opacity: 0.55;
+  user-select: none;
+}
+.tab.subtab {
+  padding-left: 22px;
+}
+.tab.child.subtab {
+  padding-left: 44px;
+}
+.tab.subtab .subtab-bar {
+  display: inline-block;
+  margin-inline-end: -4px;
+}
+
+.tab .away-slash,
+.half .away-slash {
+  display: none;
+  flex: none;
+  margin-inline: -5px -4px;
+  padding: 0 2px;
+  font-size: 12px;
+  font-weight: 700;
+  color: color-mix(in srgb, var(--space) 75%, var(--fg));
+  cursor: pointer;
+  user-select: none;
+}
+.tab.away .away-slash,
+.half.away .away-slash {
+  display: inline-block;
+}
+
+/* Keep the lock or away-reset trailing button subtly visible on locked rows, and full on hover. */
+.tab.locked .close,
+.tab.away .close,
+.tab.split .half.locked .close,
+.tab.split .half.away .close {
+  visibility: visible;
+  opacity: 0.55;
+}
+.tab:hover .close,
+.tab.split .half:hover .close {
+  visibility: visible;
+  opacity: 1;
+}
+
+.dialog-card .dialog-error {
+  color: #e5484d;
+}
+.dialog-card .dialog-error[hidden] {
+  display: none;
+}
+
+/* Clean Up hover preview highlights rows that will close, reset, or reorder. */
+body.cleanup-preview .tab.will-close,
+body.cleanup-preview .half.will-close {
+  background: rgba(229, 72, 77, 0.14);
+  outline: 1px dashed rgba(229, 72, 77, 0.55);
+  outline-offset: -1px;
+}
+body.cleanup-preview .tab.will-close .title,
+body.cleanup-preview .half.will-close .title {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+body.cleanup-preview .tab.will-reset,
+body.cleanup-preview .half.will-reset {
+  background: color-mix(in srgb, var(--space) 16%, transparent);
+  outline: 1px dashed color-mix(in srgb, var(--space) 65%, transparent);
+  outline-offset: -1px;
+}
+body.cleanup-preview .tab.will-reorder,
+body.cleanup-preview .half.will-reorder {
+  box-shadow: inset 3px 0 0 var(--space);
+}
+
 /* ---------- Private window: tabs only ---------- */
 
 body.private #favorites,
