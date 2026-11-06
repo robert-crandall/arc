@@ -1,5 +1,5 @@
 /* global ArcFox */
-import { h, lucide, setIcon, syncChildren, showMenu, hideMenu } from "./ui.js";
+import { h, lucide, setIcon, syncChildren, showMenu, hideMenu, openDialog } from "./ui.js";
 import { createAddressBar } from "./address.js";
 import { createSpacesBar } from "./spaces.js";
 import { createDownloads } from "./downloads.js";
@@ -33,6 +33,18 @@ const state = {
   bound: new Map(), // itemId -> tab
   tabItem: new Map(), // tabId -> itemId
   tabSpace: new Map(), // tabId -> spaceId
+  tabParent: new Map(), // tabId -> { itemId? | tabId? }
+  tabLocked: new Map(), // tabId -> { url, lockedOrder }
+  childrenByItem: new Map(), // itemId -> tab[] (this window)
+  childrenByTab: new Map(), // parentTabId -> tab[] (this window)
+  cleanupPlan: {
+    canCleanUp: false,
+    closeTabIds: [],
+    resetItemIds: [],
+    resetTabIds: [],
+    reorderItemIds: [],
+    reorderTabIds: [],
+  },
   badges: new Map(), // tabId -> badges other extensions put on it
   tabs: [], // this window, sorted by index
 };
@@ -124,10 +136,13 @@ async function refresh() {
       state.badges = badges;
       state.hideFavHint = !!prefs[HIDE_FAV_HINT];
       collapsed = prefs[PINS_COLLAPSED] || {};
-      if (scan) {
+      const needsSplitUnparent = allTabs.some((t) => state.tabParent.has(t.id) && inSplit(t));
+      if (scan || needsSplitUnparent) {
         const result = await ArcFox.scanTabs(allTabs, st);
         state.tabItem = result.tabItem;
         state.tabSpace = result.tabSpace;
+        state.tabParent = result.tabParent;
+        state.tabLocked = result.tabLocked;
       }
       state.spaceId = state.private ? null : await ArcFox.getWindowSpace(state.windowId, st);
       state.spaces = st.spaces;
@@ -146,7 +161,43 @@ async function refresh() {
         else state.tabItem.delete(tabId);
       }
       for (const tabId of state.tabSpace.keys()) if (!byId.has(tabId)) state.tabSpace.delete(tabId);
+      for (const tabId of state.tabParent.keys()) if (!byId.has(tabId)) state.tabParent.delete(tabId);
+      for (const tabId of state.tabLocked.keys()) if (!byId.has(tabId)) state.tabLocked.delete(tabId);
       state.tabs = allTabs.filter((t) => t.windowId === state.windowId).sort((a, b) => a.index - b.index);
+      const visibleIds = new Set(
+        state.tabs
+          .filter((t) => !doomedTabs.has(t.id) && (state.private || spaceOf(t) === state.spaceId))
+          .map((t) => t.id)
+      );
+      const pinIdsInSpace = new Set(state.pins.filter((i) => !ArcFox.isFolder(i)).map((i) => i.id));
+      state.childrenByItem = new Map();
+      state.childrenByTab = new Map();
+      for (const t of state.tabs) {
+        if (state.tabItem.has(t.id) || doomedTabs.has(t.id)) continue;
+        if (!state.private && spaceOf(t) !== state.spaceId) continue;
+        const p = state.tabParent.get(t.id);
+        if (p?.itemId && pinIdsInSpace.has(p.itemId)) {
+          const list = state.childrenByItem.get(p.itemId) || [];
+          list.push(t);
+          state.childrenByItem.set(p.itemId, list);
+        } else if (p?.tabId && visibleIds.has(p.tabId) && !state.tabItem.has(p.tabId)) {
+          const list = state.childrenByTab.get(p.tabId) || [];
+          list.push(t);
+          state.childrenByTab.set(p.tabId, list);
+        } else if (p) {
+          state.tabParent.delete(t.id);
+        }
+      }
+      state.cleanupPlan = ArcFox.getCleanupPlan({
+        spaceId: state.spaceId,
+        pins: state.pins,
+        tabs: state.tabs,
+        bound: state.bound,
+        tabItem: state.tabItem,
+        tabSpace: state.tabSpace,
+        tabParent: state.tabParent,
+        tabLocked: state.tabLocked,
+      });
       const tScan = performance.now();
       if (!dragging && !renaming) render();
       // A refresh the eye can catch is a bug; say which part took the time.
@@ -186,6 +237,7 @@ function render() {
   renderFavorites();
   renderPinned();
   renderToday();
+  updateCleanupControl();
   applySelection();
   spacesBar.render(state);
   address.update(activeTab());
@@ -222,14 +274,16 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 
 const closeIcon = () => lucide(LUCIDE.x);
 
-/** favicon, mute, title, badges, close: the parts fillRow() updates. */
+/** subtab-bar, favicon, away-slash, mute, title, badges, close: the parts fillRow() updates. */
 const rowParts = () => [
+  h("span", { className: "subtab-bar", "aria-hidden": "true" }, "|"),
   h("span", { className: "favicon" }),
+  h("span", { className: "away-slash", title: "Away from locked page - double-click to return" }, "/"),
   h("button", { className: "icon-btn audio" }),
   h("span", { className: "badges start" }),
   h("span", { className: "title" }),
   h("span", { className: "badges" }),
-  h("button", { className: "icon-btn close", title: "Close tab" }, closeIcon()),
+  h("button", { className: "icon-btn close", title: "Mark Done" }, closeIcon()),
 ];
 
 function makeRow(dataset) {
@@ -241,11 +295,22 @@ function makeSplitRow() {
   return h("li", { className: "tab split" });
 }
 
-function fillRow(el, tab, { title, url, icon }) {
-  const [favicon, audio, startBadgesEl, titleEl, badgesEl] = el.children;
+function fillRow(
+  el,
+  tab,
+  { title, url, icon, savedUrl = null, locked = false, subtab = false, cleanup = null }
+) {
+  const [_subtabBar, favicon, _awaySlash, audio, startBadgesEl, titleEl, badgesEl, closeBtn] = el.children;
+  const away = ArcFox.isTabAway(tab, savedUrl);
   el.classList.toggle("active", !!tab?.active);
   el.classList.toggle("discarded", !!tab?.discarded);
   el.classList.toggle("loading", tab?.status === "loading" && !tab.discarded);
+  el.classList.toggle("subtab", !!subtab);
+  el.classList.toggle("away", away);
+  el.classList.toggle("locked", !!locked);
+  el.classList.toggle("will-close", !!cleanup?.close);
+  el.classList.toggle("will-reset", !!cleanup?.reset);
+  el.classList.toggle("will-reorder", !!cleanup?.reorder);
   if (titleEl.textContent !== title) titleEl.textContent = title;
   el.title = url ? `${title}\n${url}` : title;
   setIcon(favicon, icon, url);
@@ -257,6 +322,28 @@ function fillRow(el, tab, { title, url, icon }) {
     audio.replaceChildren(lucide(muted ? LUCIDE.volumeOff : LUCIDE.volume));
   }
   audio.title = muted ? "Unmute tab" : "Mute tab";
+
+  // Same-slot trailing button:
+  // - When a pinned or locked tab has navigated away: "Go Back to Locked Page" (reset arrow)
+  // - When a tab is locked at its saved URL: lock icon
+  // - Otherwise: "Mark Done" / "Unload Tab" (x)
+  const action = away ? "reset" : locked ? "locked" : "close";
+  if (closeBtn.dataset.action !== action) {
+    closeBtn.dataset.action = action;
+    const iconPath = action === "reset" ? LUCIDE.reset : action === "locked" ? LUCIDE.lock : LUCIDE.x;
+    closeBtn.replaceChildren(lucide(iconPath));
+  }
+  closeBtn.title =
+    action === "reset"
+      ? "Go Back to Locked Page"
+      : action === "locked"
+        ? el.classList.contains("item") && tab
+          ? "Locked Tab (click to unload)"
+          : "Locked Tab"
+        : el.classList.contains("item")
+          ? "Unload Tab"
+          : "Mark Done";
+
   const badges = (tab && state.badges.get(tab.id)) || [];
   fillBadges(startBadgesEl, badges.filter((b) => b.position === "start"));
   fillBadges(badgesEl, badges.filter((b) => b.position !== "start"));
@@ -284,6 +371,8 @@ const LUCIDE = {
   volumeOff:
     "M11 4.702a.7.7 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.7.7 0 0 0 11 19.298zm5.5 9.798l5-5m-5 0l5 5",
   x: "M18 6L6 18M6 6l12 12",
+  lock: "M7 11V7a5 5 0 0 1 10 0v4M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2z",
+  reset: "M9 14 4 9l5-5M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11",
   // Badge icons other extensions can pick (see BADGE_ICONS in shared/store.js).
   bot: "M12 8V4H8M6 8h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2zM2 14h2M20 14h2M15 13v2M9 13v2",
   sparkles:
@@ -324,6 +413,14 @@ function pinRow(item, parent) {
     title: item.title || tab?.title || item.url,
     url: tab?.url || item.url,
     icon: tab?.favIconUrl || state.icons[item.id] || item.icon,
+    savedUrl: item.url,
+    locked: !!item.locked,
+    subtab: false,
+    cleanup: {
+      close: false,
+      reset: state.cleanupPlan.resetItemIds.includes(item.id),
+      reorder: state.cleanupPlan.reorderItemIds.includes(item.id),
+    },
   });
   return el;
 }
@@ -357,13 +454,19 @@ function folderRow(folder) {
 function renderPinned() {
   const folderIds = new Set(state.pins.filter(ArcFox.isFolder).map((f) => f.id));
   const nodes = [];
+  const pushPin = (item, parent) => {
+    nodes.push(pinRow(item, parent));
+    for (const childTab of state.childrenByItem.get(item.id) || []) {
+      nodes.push(tabEl(childTab, makeRow, { subtab: true, parentItem: item.id, parentFolder: parent }));
+    }
+  };
   for (const item of state.pins) {
     if (item.parent && folderIds.has(item.parent)) continue; // rendered under its folder
     if (ArcFox.isFolder(item)) {
       nodes.push(folderRow(item));
-      if (item.open) for (const child of state.pins) if (child.parent === item.id) nodes.push(pinRow(child, item.id));
+      if (item.open) for (const child of state.pins) if (child.parent === item.id) pushPin(child, item.id);
     } else {
-      nodes.push(pinRow(item, ""));
+      pushPin(item, "");
     }
   }
   prune(pinEls, state.pins.map((i) => i.id));
@@ -381,8 +484,7 @@ function renderPinned() {
  * about:blank tab that isn't on its way somewhere — a tab opened from a link
  * starts blank too, and that one should show as loading, not as "New Tab".
  */
-const isBlankTab = (tab) =>
-  ArcFox.isNewTabUrl(tab.url) || ((!tab.url || tab.url === "about:blank") && tab.status !== "loading");
+const isBlankTab = ArcFox.isBlankTab;
 
 const inSplit = (tab) => tab.splitViewId !== undefined && tab.splitViewId !== -1;
 
@@ -408,13 +510,16 @@ function iconFor(tab) {
   return null;
 }
 
-function tabEl(tab, make) {
+function tabEl(tab, make, { subtab = false, parentItem = "", parentFolder = "" } = {}) {
   let el = tabEls.get(tab.id);
   if (!el || el.matches("li") !== (make === makeRow)) {
     el = make === makeRow ? makeRow({ tab: tab.id }) : h("span", { className: "half", draggable: true, dataset: { tab: tab.id } }, ...rowParts());
     tabEls.set(tab.id, el);
   }
   el.dataset.sel = `t:${tab.id}`;
+  el.dataset.parentItem = parentItem || "";
+  el.dataset.parent = parentFolder || "";
+  el.classList.toggle("child", !!parentFolder);
   // Blank tabs (Cmd+T, command bar) look like the "+ New Tab" row — unless the
   // command bar has just sent one somewhere.
   const pending = pendingNav.get(tab.id);
@@ -422,7 +527,20 @@ function tabEl(tab, make) {
   el.classList.toggle("blank", blank);
   const loadingTitle = tab.status === "loading" ? "Loading…" : tab.url;
   const title = blank ? "New Tab" : pending?.label || tab.title || loadingTitle;
-  fillRow(el, tab, { title, url: pending ? "" : tab.url, icon: pending ? null : iconFor(tab) });
+  const lock = state.tabLocked.get(tab.id);
+  fillRow(el, tab, {
+    title,
+    url: pending ? "" : tab.url,
+    icon: pending ? null : iconFor(tab),
+    savedUrl: lock?.url || null,
+    locked: !!lock,
+    subtab,
+    cleanup: {
+      close: state.cleanupPlan.closeTabIds.includes(tab.id),
+      reset: state.cleanupPlan.resetTabIds.includes(tab.id),
+      reorder: state.cleanupPlan.reorderTabIds.includes(tab.id),
+    },
+  });
   if (blank) el.classList.remove("loading"); // a blank row never spins
   if (pending) el.classList.add("loading"); // ...but a tab on its way does
   if (blank) {
@@ -436,20 +554,21 @@ function tabEl(tab, make) {
 }
 
 function renderToday() {
-  const tabs = state.tabs.filter(
+  const allToday = state.tabs.filter(
     (t) =>
       !state.tabItem.has(t.id) &&
       !doomedTabs.has(t.id) &&
+      !state.tabParent.get(t.id)?.itemId &&
       (preSwapTabs.has(t.id) || state.private || spaceOf(t) === state.spaceId)
   );
+  const tabs = allToday.filter((t) => !state.tabParent.get(t.id)?.tabId);
   // A tab Firefox just made sits at the end of its list and has no space yet;
   // draw it where Arc is about to put it so the row never moves.
   tabs.sort((a, b) => (preSwapTabs.has(b.id) ? 1 : 0) - (preSwapTabs.has(a.id) ? 1 : 0));
-  const all = tabs;
   // The "+ New Tab" button only shows while Today is empty; otherwise Cmd+T.
-  els.newTab.hidden = all.length > 0;
+  els.newTab.hidden = allToday.length > 0;
   // A lone blank tab has nothing to close into: no ✕ on it.
-  els.today.classList.toggle("only-blank", all.length === 1 && isBlankTab(all[0]));
+  els.today.classList.toggle("only-blank", allToday.length === 1 && isBlankTab(allToday[0]));
   const nodes = [];
   const splitKeys = new Set();
   for (let i = 0; i < tabs.length; i++) {
@@ -466,9 +585,17 @@ function renderToday() {
       row.classList.toggle("active", tab.active || next.active);
       syncChildren(row, [tabEl(tab, null), tabEl(next, null)]);
       nodes.push(row);
+      for (const parent of [tab, next]) {
+        for (const childTab of state.childrenByTab.get(parent.id) || []) {
+          nodes.push(tabEl(childTab, makeRow, { subtab: true }));
+        }
+      }
       i++;
     } else {
       nodes.push(tabEl(tab, makeRow));
+      for (const childTab of state.childrenByTab.get(tab.id) || []) {
+        nodes.push(tabEl(childTab, makeRow, { subtab: true }));
+      }
     }
   }
   prune(tabEls, [...state.tabs.map((t) => t.id), ...splitKeys]);
@@ -501,6 +628,7 @@ function renderPrivate() {
   els.spaceName.textContent = "Private window";
   els.spaceIcon.hidden = true;
   renderToday();
+  updateCleanupControl();
   applySelection();
   address.update(activeTab());
   $("back").disabled = !activeTab();
@@ -721,12 +849,22 @@ function itemMenu(itemId) {
   const { item } = found;
   const isFav = ArcFox.isFavKey(found.key);
   const tab = state.bound.get(itemId);
-  const moved = tab && tab.url !== item.url;
+  const moved = ArcFox.isTabAway(tab, item.url);
   return [
     { label: tab ? "Go to Tab" : "Open", run: () => ArcFox.openItem(itemId, state.windowId) },
     { label: "Open in New Tab", run: () => newTabInSpace(item.url) },
-    moved && { label: "Back to Saved URL", run: () => ArcFox.resetItem(itemId) },
-    moved && ArcFox.isFavoritable(tab.url) && { label: "Save Current URL", run: () => ArcFox.saveCurrentUrl(itemId) },
+    moved && { label: "Go Back to Locked Page", run: () => ArcFox.resetItem(itemId) },
+    moved && ArcFox.isFavoritable(tab.url) && { label: "Replace with Current URL", run: () => ArcFox.saveCurrentUrl(itemId) },
+    { label: "Edit Locked URL…", run: () => openEditUrlDialog({ itemId, currentUrl: item.url }) },
+    !isFav && {
+      label: item.locked ? "Unlock Tab" : "Lock Tab",
+      run: () => ArcFox.setItemLocked(itemId, !item.locked),
+    },
+    !isFav &&
+      state.cleanupPlan.reorderItemIds.includes(itemId) && {
+        label: "Save Current Order as Default",
+        run: () => ArcFox.saveDefaultOrder(state.spaceId, state.windowId),
+      },
     { label: "Copy Link", run: () => navigator.clipboard.writeText(item.url) },
     "-",
     isFav
@@ -743,11 +881,80 @@ function itemMenu(itemId) {
       label: "Remove from Folder",
       run: () => ArcFox.moveItem(itemId, ArcFox.pinKey(state.spaceId), item.parent, { parent: null }),
     },
-    tab && { label: "Close Tab", run: () => closeTab(tab.id) },
+    tab && { label: "Unload Tab", run: () => closeTab(tab.id) },
     isFav
       ? { label: "Remove from Favorites", danger: true, run: () => ArcFox.removeItem(itemId, state.spaceId) }
       : { label: "Unpin", danger: true, run: () => ArcFox.removeItem(itemId, state.spaceId) },
   ].filter(Boolean);
+}
+
+function openEditUrlDialog({ itemId = null, tabId = null, currentUrl = "" }) {
+  const input = h("input", {
+    type: "text",
+    value: currentUrl,
+    placeholder: "https://example.com",
+    spellcheck: false,
+    "aria-label": "Saved URL",
+  });
+  const errorEl = h("p", { className: "hint dialog-error", hidden: true }, "Enter a valid http:// or https:// URL.");
+  const save = async (close) => {
+    const normalized = ArcFox.normalizeSavedUrl(input.value);
+    if (!normalized) {
+      errorEl.hidden = false;
+      input.focus();
+      return;
+    }
+    if (itemId) await ArcFox.editItemUrl(itemId, normalized);
+    else if (tabId !== null) await ArcFox.editLockedTabUrl(tabId, normalized);
+    close();
+    schedule(true);
+  };
+  openDialog((close) => {
+    input.addEventListener("input", () => {
+      errorEl.hidden = true;
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        save(close);
+      }
+    });
+    setTimeout(() => {
+      input.focus();
+      input.select();
+    }, 0);
+    return h(
+      "div",
+      { className: "dialog-card" },
+      h("h2", {}, "Edit Locked URL"),
+      h("p", { className: "hint" }, "Update the saved URL without interrupting the open page."),
+      input,
+      errorEl,
+      h(
+        "div",
+        { className: "actions" },
+        h("button", { type: "button", dataset: { cancel: "" }, onclick: () => close() }, "Cancel"),
+        h("button", { type: "button", className: "primary", onclick: () => save(close) }, "Save")
+      )
+    );
+  });
+}
+
+function updateCleanupControl() {
+  const plan = state.cleanupPlan;
+  els.clear.disabled = !plan.canCleanUp;
+  els.clear.classList.toggle("has-work", !!plan.canCleanUp);
+  if (!plan.canCleanUp) {
+    document.body.classList.remove("cleanup-preview");
+    els.clear.title = "Nothing to clean up";
+    return;
+  }
+  const parts = [];
+  if (plan.closeTabIds.length) parts.push(`close ${plural(plan.closeTabIds.length, "unlocked tab")}`);
+  const resets = plan.resetItemIds.length + plan.resetTabIds.length;
+  if (resets) parts.push(`reset ${plural(resets, "locked tab")}`);
+  if (plan.reorderItemIds.length || plan.reorderTabIds.length) parts.push("restore default order");
+  els.clear.title = `Clean Up: ${parts.join(", ")}`;
 }
 
 /* ---------- Clicks ---------- */
@@ -764,6 +971,16 @@ els.favorites.addEventListener("click", (e) => {
 
 for (const zone of [els.favorites, els.pinned]) {
   zone.addEventListener("contextmenu", (e) => {
+    const subtab = e.target.closest("[data-tab]");
+    if (subtab) {
+      if (selection.has(subtab.dataset.sel) && selection.size > 1) {
+        e.preventDefault();
+        showMenu(selectionMenu(), e.clientX, e.clientY, () => schedule(true));
+        return;
+      }
+      browser.menus.overrideContext({ context: "tab", tabId: Number(subtab.dataset.tab) });
+      return;
+    }
     const el = e.target.closest("[data-item]");
     if (!el) return;
     e.preventDefault();
@@ -809,6 +1026,7 @@ els.spaceHead.addEventListener("contextmenu", (e) => {
 });
 
 function spaceMenu() {
+  const reordered = state.cleanupPlan.reorderItemIds.length > 0 || state.cleanupPlan.reorderTabIds.length > 0;
   return [
     {
       label: "New Folder",
@@ -816,23 +1034,48 @@ function spaceMenu() {
         pendingRename = (await ArcFox.createFolder(state.spaceId)).id;
       },
     },
+    state.cleanupPlan.canCleanUp && {
+      label: "Clean Up Space",
+      run: () => ArcFox.cleanUpSpace(state.spaceId, state.windowId),
+    },
+    reordered && {
+      label: "Save Current Locked Order as Default",
+      run: () => ArcFox.saveDefaultOrder(state.spaceId, state.windowId),
+    },
     "-",
     { label: "Import from Arc…", run: () => newTabInSpace(browser.runtime.getURL("import/import.html")) },
     { label: "Welcome & Setup", run: () => newTabInSpace(browser.runtime.getURL("welcome/welcome.html")) },
-  ];
+  ].filter(Boolean);
 }
 
 els.pinned.addEventListener("click", (e) => {
   const row = e.target.closest(".tab");
   if (!row || handleSelectClick(e, row)) return;
+  if (row.dataset.tab) {
+    const tab = tabById(Number(row.dataset.tab));
+    if (!tab) return;
+    if (e.target.closest(".close")) {
+      closeTab(tab.id);
+    } else if (e.target.closest(".audio")) {
+      browser.tabs.update(tab.id, { muted: !tab.mutedInfo?.muted });
+    } else {
+      browser.tabs.update(tab.id, { active: true });
+    }
+    return;
+  }
   const folder = pinById(row.dataset.item);
   if (ArcFox.isFolder(folder)) {
     toggleFolder(folder);
     return;
   }
   const tab = state.bound.get(row.dataset.item);
-  if (e.target.closest(".close")) {
-    if (tab) closeTab(tab.id);
+  const closeBtn = e.target.closest(".close");
+  if (closeBtn) {
+    if (closeBtn.dataset.action === "reset") {
+      ArcFox.resetItem(row.dataset.item).then(() => schedule(true));
+    } else if (tab) {
+      closeTab(tab.id);
+    }
   } else if (e.target.closest(".audio")) {
     if (tab) browser.tabs.update(tab.id, { muted: !tab.mutedInfo?.muted });
   } else {
@@ -844,14 +1087,24 @@ els.pinned.addEventListener("click", (e) => {
 });
 
 els.pinned.addEventListener("dblclick", (e) => {
+  if (e.target.closest(".away-slash")) {
+    const itemRow = e.target.closest("[data-item]");
+    if (itemRow) ArcFox.resetItem(itemRow.dataset.item).then(() => schedule(true));
+    return;
+  }
   const row = e.target.closest(".tab.folder");
   if (row && e.target.closest(".title")) startRename(row.dataset.item);
 });
 
 els.pinned.addEventListener("auxclick", (e) => {
   const row = e.target.closest(".tab");
-  const tab = row && state.bound.get(row.dataset.item);
-  if (tab && e.button === 1) closeTab(tab.id);
+  if (!row || e.button !== 1) return;
+  if (row.dataset.tab) {
+    closeTab(Number(row.dataset.tab));
+    return;
+  }
+  const tab = state.bound.get(row.dataset.item);
+  if (tab) closeTab(tab.id);
 });
 
 els.today.addEventListener("click", (e) => {
@@ -859,9 +1112,15 @@ els.today.addEventListener("click", (e) => {
   if (handleSelectClick(e, row)) return;
   const tab = row && tabById(Number(row.dataset.tab));
   if (!tab) return;
-  if (e.target.closest(".close")) closeTab(tab.id);
-  else if (e.target.closest(".audio")) browser.tabs.update(tab.id, { muted: !tab.mutedInfo?.muted });
-  else browser.tabs.update(tab.id, { active: true });
+  const closeBtn = e.target.closest(".close");
+  if (closeBtn) {
+    if (closeBtn.dataset.action === "reset") ArcFox.resetLockedTab(tab.id).then(() => schedule(true));
+    else if (closeBtn.dataset.action !== "locked") closeTab(tab.id);
+  } else if (e.target.closest(".audio")) {
+    browser.tabs.update(tab.id, { muted: !tab.mutedInfo?.muted });
+  } else {
+    browser.tabs.update(tab.id, { active: true });
+  }
 });
 
 els.today.addEventListener("auxclick", (e) => {
@@ -887,6 +1146,11 @@ document.addEventListener("mousedown", (e) => {
 });
 
 els.today.addEventListener("dblclick", (e) => {
+  if (e.target.closest(".away-slash")) {
+    const row = e.target.closest("[data-tab]:not(.split)");
+    if (row) ArcFox.resetLockedTab(Number(row.dataset.tab)).then(() => schedule(true));
+    return;
+  }
   if (!e.target.closest(".tab")) newTabInSpace();
 });
 
@@ -894,14 +1158,37 @@ els.today.addEventListener("dblclick", (e) => {
 els.newTab.addEventListener("click", () => newTabInSpace());
 els.newTabLink.addEventListener("click", () => newTabInSpace());
 
+const showCleanupPreview = () => {
+  if (state.cleanupPlan.canCleanUp) document.body.classList.add("cleanup-preview");
+};
+const hideCleanupPreview = () => document.body.classList.remove("cleanup-preview");
+els.clear.addEventListener("mouseenter", showCleanupPreview);
+els.clear.addEventListener("mouseleave", hideCleanupPreview);
+els.clear.addEventListener("focus", showCleanupPreview);
+els.clear.addEventListener("blur", hideCleanupPreview);
+
 els.clear.addEventListener("click", async () => {
-  const ids = state.tabs
-    .filter((t) => !state.tabItem.has(t.id) && spaceOf(t) === state.spaceId)
-    .map((t) => t.id);
-  if (!ids.length) return;
-  // Keep the space (and window) alive with a fresh tab.
-  await newTabInSpace();
-  await removeTabs(ids);
+  hideCleanupPreview();
+  if (!state.cleanupPlan.canCleanUp) return;
+  await ArcFox.cleanUpSpace(state.spaceId, state.windowId);
+  schedule(true);
+});
+
+els.clear.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  const reordered = state.cleanupPlan.reorderItemIds.length > 0 || state.cleanupPlan.reorderTabIds.length > 0;
+  showMenu(
+    [
+      {
+        label: "Save Current Locked Order as Default",
+        disabled: !reordered,
+        run: () => ArcFox.saveDefaultOrder(state.spaceId, state.windowId),
+      },
+    ],
+    e.clientX,
+    e.clientY,
+    () => schedule(true)
+  );
 });
 
 /* ---------- Drag and drop ---------- */
@@ -1009,13 +1296,18 @@ function markRow(e, zone, fallback) {
 function pinnedDropTarget() {
   const into = els.pinned.querySelector(".drop-into");
   if (into) return { before: null, parent: into.dataset.item };
-  const mark = els.pinned.querySelector(".drop-before, .drop-after");
+  let mark = els.pinned.querySelector(".drop-before, .drop-after");
   if (!mark) return { before: null, parent: null };
+  const dropBefore = mark.classList.contains("drop-before");
+  if (!mark.dataset.item && mark.dataset.parentItem) {
+    const parentRow = pinEls.get(mark.dataset.parentItem);
+    if (parentRow) mark = parentRow;
+  }
   const parent = mark.dataset.parent || null;
-  if (mark.classList.contains("drop-before")) return { before: mark.dataset.item, parent };
-  // After: the next row at the same level (skipping an open folder's items).
+  if (dropBefore && mark.dataset.item) return { before: mark.dataset.item, parent };
+  // After: the next pinned-item row at the same level (skipping child subtabs and an open folder's items).
   let next = mark.nextElementSibling;
-  while (next && parent === null && next.dataset.parent) next = next.nextElementSibling;
+  while (next && (!next.dataset.item || (parent === null && next.dataset.parent))) next = next.nextElementSibling;
   const sameLevel = next && (next.dataset.parent || null) === parent;
   return { before: sameLevel ? next.dataset.item : null, parent };
 }
@@ -1125,10 +1417,12 @@ async function onTodayDrop(e) {
   clearDropMarks();
 
   let tabId = null;
+  let unpinnedLockedUrl = null;
   const itemId = e.dataTransfer.getData(ITEM_MIME);
   if (itemId) {
     const st = await ArcFox.getState();
     const found = ArcFox.findItem(st, itemId);
+    if (found?.item?.locked) unpinnedLockedUrl = found.item.url;
     const tab = await ArcFox.removeItem(itemId, state.spaceId);
     if (tab) tabId = tab.id;
     else if (found) tabId = (await newTabInSpace(found.item.url)).id;
@@ -1138,16 +1432,54 @@ async function onTodayDrop(e) {
   if (tabId === null) return;
 
   try {
-    const fresh = await browser.tabs.query({ windowId: state.windowId });
     const cur = await browser.tabs.get(tabId);
+    const familyScan = await ArcFox.scanTabs(await browser.tabs.query({}), await ArcFox.getState());
+    const curParent = familyScan.tabParent.get(tabId);
+    const fresh = await browser.tabs.query({ windowId: state.windowId });
     const target = targetId !== null && fresh.find((t) => t.id === targetId);
+    const targetRootId = target ? familyScan.tabParent.get(target.id)?.tabId || target.id : null;
+    const staysChildInFamily =
+      curParent?.tabId &&
+      cur.windowId === state.windowId &&
+      targetRootId === curParent.tabId &&
+      (after || target.id !== curParent.tabId);
+    if (curParent && !staysChildInFamily) {
+      await ArcFox.clearTabParent(tabId);
+    }
+    const children = staysChildInFamily ? [] : (familyScan.childrenByTab.get(tabId) || []).map((c) => c.id);
+    const moveIds = [tabId, ...children];
+    const moveSet = new Set(moveIds);
+    if (targetId !== null && moveSet.has(targetId) && cur.windowId === state.windowId) {
+      schedule(true);
+      return;
+    }
     let index = target ? target.index + (after ? 1 : 0) : fresh.length;
-    if (cur.windowId === state.windowId && cur.index < index) index -= 1;
+    if (target && !staysChildInFamily) {
+      const targetRoot = fresh.find((t) => t.id === targetRootId) || target;
+      const targetRoots = fresh.filter(
+        (t) => t.id === targetRoot.id || (inSplit(targetRoot) && t.splitViewId === targetRoot.splitViewId)
+      );
+      const targetFamily = new Set(
+        targetRoots.flatMap((t) => [t.id, ...(familyScan.childrenByTab.get(t.id) || []).map((c) => c.id)])
+      );
+      const familyIndices = fresh.filter((t) => targetFamily.has(t.id)).map((t) => t.index);
+      index = after ? Math.max(...familyIndices) + 1 : Math.min(...familyIndices);
+    }
+    if (cur.windowId === state.windowId) {
+      const movingBefore = fresh.filter((t) => moveSet.has(t.id) && t.index < index).length;
+      index -= movingBefore;
+    }
     if (cur.windowId !== state.windowId || cur.index !== index) {
-      await browser.tabs.move(tabId, { windowId: state.windowId, index });
+      await browser.tabs.move(moveIds, { windowId: state.windowId, index: Math.max(0, index) });
     }
     // Tab dragged in from another window's sidebar joins this space.
-    if (cur.windowId !== state.windowId) await ArcFox.setTabSpace(tabId, state.spaceId);
+    if (cur.windowId !== state.windowId) {
+      for (const id of moveIds) await ArcFox.setTabSpace(id, state.spaceId);
+      for (const childId of children) await ArcFox.setTabParent(childId, { tabId });
+    }
+    if (unpinnedLockedUrl || cur.windowId !== state.windowId) {
+      await ArcFox.rebaseTodayTabLock(tabId, state.spaceId, unpinnedLockedUrl);
+    }
   } catch (err) {
     console.error("ArcFox: tab drop failed", err);
   }
@@ -1178,6 +1510,10 @@ browser.runtime.onMessage.addListener((msg) => {
   if (msg?.type === "arcfox:focus-address" && msg.windowId === state.windowId) {
     browser.storage.session.remove("focusAddress");
     address.focus();
+  }
+  if (msg?.type === "arcfox:edit-locked-url" && msg.windowId === state.windowId) {
+    browser.storage.session.remove("editLockedUrl").catch(() => {});
+    openEditUrlDialog({ itemId: msg.itemId || null, tabId: msg.tabId ?? null, currentUrl: msg.url || "" });
   }
 });
 
@@ -1224,6 +1560,9 @@ browser.tabs.onRemoved.addListener((tabId) => {
   setTimeout(() => removedTabs.delete(tabId), 5000);
   state.tabItem.delete(tabId);
   state.tabSpace.delete(tabId);
+  state.tabParent.delete(tabId);
+  state.tabLocked.delete(tabId);
+  const wasParent = state.childrenByTab.has(tabId);
   // Drop the row now rather than after the refresh below: the page is already
   // gone, and the refresh has storage reads and a tabs.query to get through
   // first, which is long enough to see.
@@ -1232,12 +1571,12 @@ browser.tabs.onRemoved.addListener((tabId) => {
     for (const [itemId, tab] of state.bound) if (tab.id === tabId) state.bound.delete(itemId);
     render();
   }
-  schedule();
+  schedule(wasParent);
 });
 browser.tabs.onUpdated.addListener((tabId, changes) => {
   // The page committed (or went somewhere else): the guess isn't needed.
   if (changes.url !== undefined && !ArcFox.isNewTabUrl(changes.url)) pendingNav.delete(tabId);
-  schedule();
+  schedule(changes.splitViewId !== undefined);
 }, {
   properties: ["title", "status", "favIconUrl", "pinned", "discarded", "audible", "mutedInfo", "url", "hidden", "splitViewId"],
 });
@@ -1261,9 +1600,17 @@ function keepBackgroundAwake() {
   document.body.classList.toggle("private", state.private);
   downloads.start();
   await refresh();
-  const { focusAddress } = await browser.storage.session.get("focusAddress");
+  const { focusAddress, editLockedUrl } = await browser.storage.session.get(["focusAddress", "editLockedUrl"]);
   if (focusAddress === state.windowId) {
     browser.storage.session.remove("focusAddress");
     address.focus();
+  }
+  if (editLockedUrl && editLockedUrl.windowId === state.windowId) {
+    browser.storage.session.remove("editLockedUrl");
+    openEditUrlDialog({
+      itemId: editLockedUrl.itemId || null,
+      tabId: editLockedUrl.tabId ?? null,
+      currentUrl: editLockedUrl.url || "",
+    });
   }
 })();

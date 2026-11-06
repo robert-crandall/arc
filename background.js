@@ -2,6 +2,11 @@
 "use strict";
 
 const MENU = {
+  lock: "arcfox-lock",
+  unlock: "arcfox-unlock",
+  resetLocked: "arcfox-reset-locked",
+  replaceLocked: "arcfox-replace-locked",
+  editLocked: "arcfox-edit-locked",
   favAdd: "arcfox-fav-add",
   favRemove: "arcfox-fav-remove",
   pin: "arcfox-pin",
@@ -147,6 +152,11 @@ browser.windows.onCreated.addListener((win) => {
 function createMenus() {
   browser.menus.removeAll().then(() => {
     moveChildren = [];
+    browser.menus.create({ id: MENU.resetLocked, title: "Go Back to Locked Page", contexts: ["tab"], visible: false });
+    browser.menus.create({ id: MENU.lock, title: "Lock Tab", contexts: ["tab"] });
+    browser.menus.create({ id: MENU.unlock, title: "Unlock Tab", contexts: ["tab"], visible: false });
+    browser.menus.create({ id: MENU.editLocked, title: "Edit Locked URL…", contexts: ["tab"], visible: false });
+    browser.menus.create({ id: MENU.replaceLocked, title: "Replace with Current URL", contexts: ["tab"], visible: false });
     browser.menus.create({ id: MENU.favAdd, title: "Add to Favorites", contexts: ["tab", "page"] });
     browser.menus.create({ id: MENU.favRemove, title: "Remove from Favorites", contexts: ["tab", "page"], visible: false });
     browser.menus.create({ id: MENU.pin, title: "Pin in Space", contexts: ["tab"] });
@@ -221,6 +231,9 @@ browser.tabs.onCreated.addListener((tab) => {
   // Firefox puts its own new tab at the end of the strip; pull it to the top
   // before the command bar takes its place.
   if (blank) placeNewTab(tab).catch(() => {});
+  if (tab.openerTabId !== undefined && !ArcFox.isNewTabUrl(tab.url)) {
+    ArcFox.adoptTab(tab.id).catch(() => {});
+  }
   setTimeout(() => ArcFox.adoptTab(tab.id), blank ? 1500 : 300);
 });
 
@@ -538,10 +551,18 @@ async function listedTabs(tab) {
   const state = await ArcFox.getState();
   const spaceId = (await ArcFox.getTabSpace(tab.id)) || (await ArcFox.getWindowSpace(tab.windowId, state));
   const tabs = (await browser.tabs.query({ windowId: tab.windowId })).filter((t) => !t.pinned);
-  const { tabItem, tabSpace } = await ArcFox.scanTabs(tabs, state);
-  return tabs
-    .filter((t) => !tabItem.has(t.id) && (tabSpace.get(t.id) ?? spaceId) === spaceId)
+  const { tabItem, tabSpace, tabParent, childrenByTab } = await ArcFox.scanTabs(tabs, state);
+  const roots = tabs
+    .filter((t) => !tabItem.has(t.id) && !tabParent.has(t.id) && (tabSpace.get(t.id) ?? spaceId) === spaceId)
     .sort((a, b) => a.index - b.index);
+  const ordered = [];
+  for (const root of roots) {
+    ordered.push(root);
+    for (const child of childrenByTab.get(root.id) || []) {
+      ordered.push(child);
+    }
+  }
+  return ordered;
 }
 
 /** Tabs of the same space above or below `tab` in the list. */
@@ -637,7 +658,19 @@ browser.runtime.onMessage.addListener((msg, sender) => {
 
 // Blank pages Arc swaps or cancels shouldn't clog Cmd/Ctrl+Shift+T.
 let forgetTimer = 0;
-browser.tabs.onRemoved.addListener(() => {
+const promoteTimers = new Map();
+browser.tabs.onRemoved.addListener((tabId, removeInfo) => {
+  if (!removeInfo?.isWindowClosing) {
+    const winKey = removeInfo?.windowId ?? "all";
+    clearTimeout(promoteTimers.get(winKey));
+    promoteTimers.set(
+      winKey,
+      setTimeout(() => {
+        promoteTimers.delete(winKey);
+        ArcFox.promoteChildrenOfClosedTab(tabId, removeInfo?.windowId).catch(() => {});
+      }, 25)
+    );
+  }
   clearTimeout(forgetTimer);
   forgetTimer = setTimeout(() => ArcFox.forgetBlankClosedTabs(), 150);
 });
@@ -686,9 +719,18 @@ async function itemOfTab(tab) {
 browser.menus.onShown.addListener(async (info, tab) => {
   if (!info.menuIds.includes(MENU.favAdd) || !tab) return;
   const { state, found } = await itemOfTab(tab);
+  const lock = await ArcFox.getTabLocked(tab.id);
   const isFav = !!found && ArcFox.isFavKey(found.key);
   const isPin = !!found && !isFav;
+  const isLocked = !isFav && (!!found?.item?.locked || !!lock);
+  const savedUrl = (!isFav && found?.item?.url) || lock?.url || null;
+  const away = ArcFox.isTabAway(tab, savedUrl);
   const favoritable = ArcFox.isFavoritable(tab.url);
+  browser.menus.update(MENU.resetLocked, { visible: !isFav && !!savedUrl && away });
+  browser.menus.update(MENU.lock, { visible: !isFav && !isLocked, enabled: favoritable });
+  browser.menus.update(MENU.unlock, { visible: !isFav && isLocked });
+  browser.menus.update(MENU.editLocked, { visible: !isFav && !!savedUrl });
+  browser.menus.update(MENU.replaceLocked, { visible: !isFav && !!savedUrl && away && favoritable });
   browser.menus.update(MENU.favAdd, { visible: !isFav, enabled: favoritable });
   browser.menus.update(MENU.favRemove, { visible: isFav });
   browser.menus.update(MENU.pin, { visible: !found, enabled: favoritable });
@@ -735,6 +777,9 @@ browser.menus.onShown.addListener(async (info, tab) => {
 
 browser.menus.onClicked.addListener(async (info, tab) => {
   const id = String(info.menuItemId);
+  if (id === MENU.editLocked) {
+    browser.sidebarAction.open(); // must run synchronously inside the user action
+  }
   const item = extensionItems.get(id);
   if (item) {
     browser.runtime.sendMessage(item.extensionId, { type: "arcsidebar:menu-clicked", id: item.id, tabId: tab.id }).catch(() => {});
@@ -755,6 +800,36 @@ browser.menus.onClicked.addListener(async (info, tab) => {
   }
   const { state, found, itemId } = await itemOfTab(tab);
   switch (id) {
+    case MENU.lock:
+      await ArcFox.setTabLocked(tab.id, true);
+      break;
+    case MENU.unlock:
+      await ArcFox.setTabLocked(tab.id, false);
+      break;
+    case MENU.resetLocked:
+      await ArcFox.resetLockedTab(tab.id);
+      break;
+    case MENU.replaceLocked:
+      await ArcFox.replaceLockedTabUrl(tab.id);
+      break;
+    case MENU.editLocked: {
+      const lock = await ArcFox.getTabLocked(tab.id);
+      const savedUrl = found?.item?.url || lock?.url || tab.url;
+      const payload = {
+        windowId: tab.windowId,
+        tabId: tab.id,
+        itemId: found ? itemId : null,
+        url: savedUrl,
+      };
+      await browser.storage.session.set({ editLockedUrl: payload });
+      browser.runtime
+        .sendMessage({
+          type: "arcfox:edit-locked-url",
+          ...payload,
+        })
+        .catch(() => {});
+      break;
+    }
     case MENU.favAdd:
       await ArcFox.addItem(await favKeyOfTab(tab, state), tab);
       break;
