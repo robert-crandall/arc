@@ -465,5 +465,23 @@ test("reconciles child subtab parent across session-restore ID changes and prese
   const afterSpaceMove = await ArcFox.scanTabs(await browser.tabs.query({ windowId: 1 }), await ArcFox.getState());
   assert.deepEqual(afterSpaceMove.tabParent.get(pinChild.id), { itemId: promotedItem.id });
   assert.equal(afterSpaceMove.tabSpace.get(pinChild.id), secondSpace.id);
+
+  // Unpinning a locked item transfers its lock and saved URL back to the detached Today root tab
+  await ArcFox.removeItem(promotedItem.id, secondSpace.id);
+  assert.deepEqual(await ArcFox.getTabLocked(lockedToday.id), {
+    url: "https://locked.example.com/home",
+    lockedOrder: 0,
+  });
+
+  // Clean Up in an all-unlocked space with an open command bar keeps the command bar instead of recreating it
+  const thirdSpace = await ArcFox.saveSpace({ name: "Scratch" });
+  const scratchWeb = addTab({ id: 97, url: "https://scratch.example.com/", active: true });
+  const scratchBar = addTab({ id: 98, url: "moz-extension://test/palette/palette.html" });
+  await ArcFox.setTabSpace(scratchWeb.id, thirdSpace.id);
+  await ArcFox.setTabSpace(scratchBar.id, thirdSpace.id);
+  const scratchPlan = await ArcFox.cleanUpSpace(thirdSpace.id, 1);
+  assert.deepEqual(scratchPlan.closeTabIds, [scratchWeb.id]);
+  assert.ok((await browser.tabs.query({ windowId: 1 })).some((t) => t.id === scratchBar.id));
 });
+
 

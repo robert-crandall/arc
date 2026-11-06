@@ -188,28 +188,16 @@ async function refresh() {
           state.tabParent.delete(t.id);
         }
       }
-      const privateCloseIds = state.private
-        ? state.tabs.filter((t) => !t.pinned && !(state.tabs.length === 1 && isBlankTab(t))).map((t) => t.id)
-        : [];
-      state.cleanupPlan = state.private
-        ? {
-            canCleanUp: privateCloseIds.length > 0,
-            closeTabIds: privateCloseIds,
-            resetItemIds: [],
-            resetTabIds: [],
-            reorderItemIds: [],
-            reorderTabIds: [],
-          }
-        : ArcFox.getCleanupPlan({
-            spaceId: state.spaceId,
-            pins: state.pins,
-            tabs: state.tabs,
-            bound: state.bound,
-            tabItem: state.tabItem,
-            tabSpace: state.tabSpace,
-            tabParent: state.tabParent,
-            tabLocked: state.tabLocked,
-          });
+      state.cleanupPlan = ArcFox.getCleanupPlan({
+        spaceId: state.spaceId,
+        pins: state.pins,
+        tabs: state.tabs,
+        bound: state.bound,
+        tabItem: state.tabItem,
+        tabSpace: state.tabSpace,
+        tabParent: state.tabParent,
+        tabLocked: state.tabLocked,
+      });
       const tScan = performance.now();
       if (!dragging && !renaming) render();
       // A refresh the eye can catch is a bug; say which part took the time.
@@ -496,8 +484,7 @@ function renderPinned() {
  * about:blank tab that isn't on its way somewhere — a tab opened from a link
  * starts blank too, and that one should show as loading, not as "New Tab".
  */
-const isBlankTab = (tab) =>
-  ArcFox.isNewTabUrl(tab.url) || ((!tab.url || tab.url === "about:blank") && tab.status !== "loading");
+const isBlankTab = ArcFox.isBlankTab;
 
 const inSplit = (tab) => tab.splitViewId !== undefined && tab.splitViewId !== -1;
 
@@ -1183,11 +1170,6 @@ els.clear.addEventListener("blur", hideCleanupPreview);
 els.clear.addEventListener("click", async () => {
   hideCleanupPreview();
   if (!state.cleanupPlan.canCleanUp) return;
-  if (state.private) {
-    await newTabInSpace();
-    await removeTabs(state.cleanupPlan.closeTabIds);
-    return;
-  }
   await ArcFox.cleanUpSpace(state.spaceId, state.windowId);
   schedule(true);
 });
@@ -1435,10 +1417,12 @@ async function onTodayDrop(e) {
   clearDropMarks();
 
   let tabId = null;
+  let unpinnedLockedUrl = null;
   const itemId = e.dataTransfer.getData(ITEM_MIME);
   if (itemId) {
     const st = await ArcFox.getState();
     const found = ArcFox.findItem(st, itemId);
+    if (found?.item?.locked) unpinnedLockedUrl = found.item.url;
     const tab = await ArcFox.removeItem(itemId, state.spaceId);
     if (tab) tabId = tab.id;
     else if (found) tabId = (await newTabInSpace(found.item.url)).id;
@@ -1448,28 +1432,38 @@ async function onTodayDrop(e) {
   if (tabId === null) return;
 
   try {
-    // Dragging a pinned child subtab into Today promotes it to a root Today tab.
-    if ((await ArcFox.getTabParent(tabId))?.itemId) await ArcFox.clearTabParent(tabId);
-    const fresh = await browser.tabs.query({ windowId: state.windowId });
     const cur = await browser.tabs.get(tabId);
     const familyScan = await ArcFox.scanTabs(await browser.tabs.query({}), await ArcFox.getState());
-    const children = (familyScan.childrenByTab.get(tabId) || []).map((c) => c.id);
+    const curParent = familyScan.tabParent.get(tabId);
+    const fresh = await browser.tabs.query({ windowId: state.windowId });
+    const target = targetId !== null && fresh.find((t) => t.id === targetId);
+    const targetRootId = target ? familyScan.tabParent.get(target.id)?.tabId || target.id : null;
+    const staysChildInFamily =
+      curParent?.tabId &&
+      cur.windowId === state.windowId &&
+      targetRootId === curParent.tabId &&
+      (after || target.id !== curParent.tabId);
+    if (curParent && !staysChildInFamily) {
+      await ArcFox.clearTabParent(tabId);
+    }
+    const children = staysChildInFamily ? [] : (familyScan.childrenByTab.get(tabId) || []).map((c) => c.id);
     const moveIds = [tabId, ...children];
     const moveSet = new Set(moveIds);
     if (targetId !== null && moveSet.has(targetId) && cur.windowId === state.windowId) {
       schedule(true);
       return;
     }
-    const target = targetId !== null && fresh.find((t) => t.id === targetId);
     let index = target ? target.index + (after ? 1 : 0) : fresh.length;
-    if (target && after) {
+    if (target && !staysChildInFamily) {
+      const targetRoot = fresh.find((t) => t.id === targetRootId) || target;
       const targetRoots = fresh.filter(
-        (t) => t.id === target.id || (inSplit(target) && t.splitViewId === target.splitViewId)
+        (t) => t.id === targetRoot.id || (inSplit(targetRoot) && t.splitViewId === targetRoot.splitViewId)
       );
       const targetFamily = new Set(
         targetRoots.flatMap((t) => [t.id, ...(familyScan.childrenByTab.get(t.id) || []).map((c) => c.id)])
       );
-      index = Math.max(...fresh.filter((t) => targetFamily.has(t.id)).map((t) => t.index)) + 1;
+      const familyIndices = fresh.filter((t) => targetFamily.has(t.id)).map((t) => t.index);
+      index = after ? Math.max(...familyIndices) + 1 : Math.min(...familyIndices);
     }
     if (cur.windowId === state.windowId) {
       const movingBefore = fresh.filter((t) => moveSet.has(t.id) && t.index < index).length;
@@ -1481,6 +1475,10 @@ async function onTodayDrop(e) {
     // Tab dragged in from another window's sidebar joins this space.
     if (cur.windowId !== state.windowId) {
       for (const id of moveIds) await ArcFox.setTabSpace(id, state.spaceId);
+      for (const childId of children) await ArcFox.setTabParent(childId, { tabId });
+    }
+    if (unpinnedLockedUrl || cur.windowId !== state.windowId) {
+      await ArcFox.rebaseTodayTabLock(tabId, state.spaceId, unpinnedLockedUrl);
     }
   } catch (err) {
     console.error("ArcFox: tab drop failed", err);

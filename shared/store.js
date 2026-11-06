@@ -61,6 +61,8 @@ const ArcFox = (() => {
   // Firefox's new-tab pages, plus Arc's own (new-tab page, full-page command bar).
   const isNewTabUrl = (url) =>
     url === "about:newtab" || url === "about:home" || /^moz-extension:\/\/[^/]+\/(newtab|palette)\//.test(url || "");
+  const isBlankTab = (tab) =>
+    isNewTabUrl(tab?.url) || ((!tab?.url || tab.url === "about:blank") && tab?.status !== "loading");
   // Only short http(s) favicon URLs go to sync storage (8KB per-item quota).
   const syncableIcon = (url) => (url && /^https?:/i.test(url) && url.length < 512 ? url : "");
   const pinKey = (spaceId) => PIN_PREFIX + spaceId;
@@ -366,17 +368,22 @@ const ArcFox = (() => {
   // answers are kept — a tab with no space yet is given one a moment later,
   // and that must not be cached as "none".
   const tabValues = new Map(); // `${tabId}:${key}` -> value
+  let tabValueRev = 0;
 
   const OPTIONAL_TAB_VALUES = new Set([PARENT_VALUE, LOCK_VALUE, ROOT_ID_VALUE]);
 
   async function tabValue(tabId, key) {
     const cacheId = `${tabId}:${key}`;
     if (tabValues.has(cacheId)) return tabValues.get(cacheId);
+    const rev = tabValueRev;
     let value;
     try {
       value = await browser.sessions.getTabValue(tabId, key);
     } catch {
       return undefined; // tab already gone
+    }
+    if (rev !== tabValueRev || tabValues.has(cacheId)) {
+      return tabValues.has(cacheId) ? tabValues.get(cacheId) : value;
     }
     if (value !== undefined && value !== null) {
       tabValues.set(cacheId, value);
@@ -391,6 +398,7 @@ const ArcFox = (() => {
 
   /** Record a value this context just wrote, and tell the others to re-read. */
   function noteTabValue(tabId, key, value) {
+    tabValueRev++;
     const cacheId = `${tabId}:${key}`;
     if (value === undefined || value === null) {
       if (
@@ -411,7 +419,10 @@ const ArcFox = (() => {
   }
 
   browser.runtime.onMessage.addListener((msg) => {
-    if (msg?.type === "arcsidebar:tab-value") tabValues.delete(`${msg.tabId}:${msg.key}`);
+    if (msg?.type === "arcsidebar:tab-value") {
+      tabValueRev++;
+      tabValues.delete(`${msg.tabId}:${msg.key}`);
+    }
   });
 
   browser.tabs.onRemoved.addListener((tabId) => {
@@ -558,6 +569,7 @@ const ArcFox = (() => {
         if (!isFolder(item)) pinItemSpace.set(item.id, spId);
       }
     }
+    const scanRev = tabValueRev;
     const metas = await Promise.all(
       tabs.map(async (t) => [
         t,
@@ -624,10 +636,16 @@ const ArcFox = (() => {
           });
         }
       }
-      if (spaceId || tabItem.has(tab.id)) {
-        if (!rawParent.has(tab.id)) tabValues.set(`${tab.id}:${PARENT_VALUE}`, undefined);
-        if (!tabLocked.has(tab.id)) tabValues.set(`${tab.id}:${LOCK_VALUE}`, undefined);
-        if (!tabRootUid.has(tab.id)) tabValues.set(`${tab.id}:${ROOT_ID_VALUE}`, undefined);
+      if (scanRev === tabValueRev && (spaceId || tabItem.has(tab.id))) {
+        if (!rawParent.has(tab.id) && !tabValues.has(`${tab.id}:${PARENT_VALUE}`)) {
+          tabValues.set(`${tab.id}:${PARENT_VALUE}`, undefined);
+        }
+        if (!tabLocked.has(tab.id) && !tabValues.has(`${tab.id}:${LOCK_VALUE}`)) {
+          tabValues.set(`${tab.id}:${LOCK_VALUE}`, undefined);
+        }
+        if (!tabRootUid.has(tab.id) && !tabValues.has(`${tab.id}:${ROOT_ID_VALUE}`)) {
+          tabValues.set(`${tab.id}:${ROOT_ID_VALUE}`, undefined);
+        }
       }
     }
 
@@ -1096,36 +1114,11 @@ const ArcFox = (() => {
         }
       }
       if (priorLock) {
-        let lockedOrder = priorLock.lockedOrder;
         if (oldSpaceId !== spaceId) {
-          const destRootEntries = winTabs
-            .filter(
-              (t) =>
-                t.id !== tabId &&
-                !scanned.tabItem.has(t.id) &&
-                !scanned.tabParent.has(t.id) &&
-                scanned.tabLocked.has(t.id) &&
-                scanned.tabSpace.get(t.id) === spaceId
-            )
-            .map((t) => {
-              const l = scanned.tabLocked.get(t.id);
-              return { id: t.id, index: t.index, locked: !!l, lockedOrder: l?.lockedOrder };
-            });
-          const movedEntry = { id: moved, index: tab.index, locked: true, lockedOrder: 0 };
-          destRootEntries.push(movedEntry);
-          destRootEntries.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
-          assignLockedOrder(destRootEntries, destRootEntries.indexOf(movedEntry), true);
-          lockedOrder = movedEntry.lockedOrder;
-          for (const entry of destRootEntries) {
-            if (entry.id !== moved && entry.locked) {
-              const prev = scanned.tabLocked.get(entry.id);
-              if (prev && prev.lockedOrder !== entry.lockedOrder) {
-                await setTabLockedValue(entry.id, { ...prev, lockedOrder: entry.lockedOrder });
-              }
-            }
-          }
+          await rebaseTodayTabLock(moved, spaceId, priorLock.url);
+        } else if (moved !== tabId) {
+          await setTabLockedValue(moved, priorLock);
         }
-        await setTabLockedValue(moved, { url: priorLock.url, lockedOrder });
       }
     }
     // Follow the tab into its new space (Arc does the same).
@@ -1473,6 +1466,7 @@ const ArcFox = (() => {
 
   /** Detach a pinned/favorite item's open tab and repoint its child subtabs. */
   async function detachPinnedItemTabs(itemId, { bound, childrenByItem }, state, preferredSpaceId) {
+    const found = findItem(state, itemId);
     const tab = bound.get(itemId) || null;
     const itemChildren = childrenByItem.get(itemId) || [];
     const byWin = new Map();
@@ -1491,6 +1485,9 @@ const ArcFox = (() => {
       for (const sub of sameWin) {
         await setTabSpace(sub.id, spaceId);
         await setTabParent(sub.id, { tabId: tab.id });
+      }
+      if (found?.item?.locked && isFavoritable(found.item.url)) {
+        await rebaseTodayTabLock(tab.id, spaceId, found.item.url);
       }
     }
     for (const [winId, winSubs] of byWin) {
@@ -1630,10 +1627,9 @@ const ArcFox = (() => {
       }
     }
 
-    const winTabs = await browser.tabs.query({ windowId: tab.windowId });
-    const scanned = await scanTabs(winTabs, state);
-    const spaceId = scanned.tabSpace.get(tabId) || (await getWindowSpace(tab.windowId, state));
     if (parent?.tabId) {
+      const winTabs = await browser.tabs.query({ windowId: tab.windowId });
+      const scanned = await scanTabs(winTabs, state);
       const sibs = scanned.childrenByTab.get(parent.tabId) || [];
       const lastSib = sibs[sibs.length - 1];
       if (lastSib && lastSib.id !== tabId && lastSib.index > tab.index) {
@@ -1642,32 +1638,52 @@ const ArcFox = (() => {
       await clearTabParent(tabId);
     }
 
-    const freshTabs = await browser.tabs.query({ windowId: tab.windowId });
+    const result = await rebaseTodayTabLock(tabId, null, tab.url);
+    notify();
+    return result;
+  }
+
+  /**
+   * Lock `tabId` (or keep its existing lock) and rebase its `lockedOrder`
+   * against the locked #today root tabs in `spaceId` within its window.
+   */
+  async function rebaseTodayTabLock(tabId, spaceId = null, savedUrl = null) {
+    const tab = await browser.tabs.get(tabId).catch(() => null);
+    if (!tab) return null;
+    const url = savedUrl || (await getTabLocked(tabId))?.url;
+    if (!url) return null;
+    const state = await getState();
+    const freshTabs = (await browser.tabs.query({ windowId: tab.windowId }))
+      .slice()
+      .sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
     const freshScan = await scanTabs(freshTabs, state);
+    const winSpace = tab.incognito ? null : await getWindowSpace(tab.windowId, state);
+    const targetSpace = tab.incognito ? null : spaceId || freshScan.tabSpace.get(tabId) || winSpace;
     const surviving = freshTabs
       .filter(
         (t) =>
+          !t.pinned &&
           !freshScan.tabItem.has(t.id) &&
           !freshScan.tabParent.has(t.id) &&
-          (freshScan.tabSpace.get(t.id) || spaceId) === spaceId &&
+          (t.incognito ? null : freshScan.tabSpace.get(t.id) || winSpace) === targetSpace &&
           (freshScan.tabLocked.has(t.id) || t.id === tabId)
       )
       .map((t) => {
         const ex = freshScan.tabLocked.get(t.id);
         return {
           tabId: t.id,
-          url: t.id === tabId ? tab.url : ex.url,
+          url: t.id === tabId ? url : ex.url,
           locked: t.id !== tabId,
           lockedOrder: ex?.lockedOrder,
         };
       });
     const targetIdx = surviving.findIndex((x) => x.tabId === tabId);
-    assignLockedOrder(surviving, targetIdx >= 0 ? targetIdx : surviving.length - 1, true);
+    if (targetIdx < 0) return null;
+    assignLockedOrder(surviving, targetIdx, true);
     for (const entry of surviving) {
       await setTabLockedValue(entry.tabId, { url: entry.url, lockedOrder: entry.lockedOrder });
     }
-    notify();
-    return surviving.find((x) => x.tabId === tabId) || null;
+    return surviving[targetIdx];
   }
 
   /** Navigate a locked #today tab (or pinned tab) back to its saved URL. */
@@ -1770,6 +1786,19 @@ const ArcFox = (() => {
       }
     }
 
+    const byId = new Map(tabs.map((t) => [t.id, t]));
+    const hasRemainingInSpace =
+      survivingToday.length > 0 ||
+      tabs.some((t) => !t.pinned && tabItem.has(t.id) && spaceOf(t) === spaceId);
+    if (!hasRemainingInSpace) {
+      const keepId =
+        closeTabIds.find((id) => !tabParent?.has(id) && isNewTabUrl(byId.get(id)?.url)) ??
+        closeTabIds.find((id) => !tabParent?.has(id) && isBlankTab(byId.get(id)));
+      if (keepId !== undefined) {
+        closeTabIds.splice(closeTabIds.indexOf(keepId), 1);
+      }
+    }
+
     const canCleanUp =
       closeTabIds.length > 0 ||
       resetItemIds.length > 0 ||
@@ -1795,29 +1824,32 @@ const ArcFox = (() => {
    */
   async function saveDefaultOrder(spaceId, windowId) {
     const state = await getState();
-    const key = pinKey(spaceId);
-    const pins = listFor(state, key).map((i) => ({ ...i }));
-    let pinsChanged = false;
-    const normalizeContainer = (parentId) => {
-      const items = pins.filter((i) => !isFolder(i) && (i.parent || null) === parentId);
-      items.forEach((item, idx) => {
-        if (item.locked && item.lockedOrder !== idx) {
-          item.lockedOrder = idx;
-          pinsChanged = true;
-        }
-      });
-    };
-    normalizeContainer(null);
-    for (const item of pins) {
-      if (isFolder(item)) normalizeContainer(item.id);
+    if (spaceId) {
+      const key = pinKey(spaceId);
+      const pins = listFor(state, key).map((i) => ({ ...i }));
+      let pinsChanged = false;
+      const normalizeContainer = (parentId) => {
+        const items = pins.filter((i) => !isFolder(i) && (i.parent || null) === parentId);
+        items.forEach((item, idx) => {
+          if (item.locked && item.lockedOrder !== idx) {
+            item.lockedOrder = idx;
+            pinsChanged = true;
+          }
+        });
+      };
+      normalizeContainer(null);
+      for (const item of pins) {
+        if (isFolder(item)) normalizeContainer(item.id);
+      }
+      if (pinsChanged) await writeList(key, pins);
     }
-    if (pinsChanged) await writeList(key, pins);
 
     if (windowId !== undefined && windowId !== null) {
       const tabs = await browser.tabs.query({ windowId });
       const scanned = await scanTabs(tabs, state);
       const lockedToday = tabs.filter(
         (t) =>
+          !t.pinned &&
           !scanned.tabItem.has(t.id) &&
           !scanned.tabParent.has(t.id) &&
           (scanned.tabSpace.get(t.id) || spaceId) === spaceId &&
@@ -1841,8 +1873,8 @@ const ArcFox = (() => {
    */
   async function cleanUpSpace(spaceId, windowId) {
     const state = await getState();
-    const key = pinKey(spaceId);
-    const pins = listFor(state, key);
+    const key = spaceId ? pinKey(spaceId) : null;
+    const pins = key ? listFor(state, key) : [];
     const tabs = await browser.tabs.query({ windowId });
     const scanned = await scanTabs(tabs, state);
     const plan = getCleanupPlan({ spaceId, pins, tabs, ...scanned });
@@ -1860,7 +1892,7 @@ const ArcFox = (() => {
     }
 
     // 2. Restore locked pinned items to their default order.
-    if (plan.reorderItemIds.length > 0) {
+    if (key && plan.reorderItemIds.length > 0) {
       await writeList(key, plan.reorderedPins);
     }
 
@@ -1873,16 +1905,34 @@ const ArcFox = (() => {
       );
       const activeClosing = tabs.some((t) => t.active && closingSet.has(t.id));
       if (!remainingInSpace.length) {
-        const space = state.spaces.find((s) => s.id === spaceId) || state.spaces[0];
-        await createTabInSpace(windowId, space);
+        const existingBlank =
+          tabs.find(
+            (t) => closingSet.has(t.id) && (scanned.tabSpace.get(t.id) || spaceId) === spaceId && isBlankTab(t)
+          ) || tabs.find((t) => !t.hidden && isNewTabUrl(t.url));
+        if (existingBlank) {
+          closingSet.delete(existingBlank.id);
+          if (scanned.tabParent.has(existingBlank.id)) await clearTabParent(existingBlank.id);
+          if (spaceId && scanned.tabSpace.get(existingBlank.id) !== spaceId) {
+            await setTabSpace(existingBlank.id, spaceId);
+          }
+          await browser.tabs.update(existingBlank.id, { active: true }).catch(() => {});
+        } else if (!spaceId) {
+          await browser.tabs.create({ windowId, active: true });
+        } else {
+          const space = state.spaces.find((s) => s.id === spaceId) || state.spaces[0];
+          await createTabInSpace(windowId, space);
+        }
       } else if (activeClosing) {
         const fallback =
           remainingInSpace.slice().sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))[0] ||
           remainingInSpace[0];
         if (fallback) await browser.tabs.update(fallback.id, { active: true }).catch(() => {});
       }
-      await markClosing(plan.closeTabIds);
-      await browser.tabs.remove(plan.closeTabIds).catch(() => {});
+      const toClose = [...closingSet];
+      if (toClose.length) {
+        await markClosing(toClose);
+        await browser.tabs.remove(toClose).catch(() => {});
+      }
     }
 
     // 4. Restore locked #today tabs to their default order in the browser tab strip.
@@ -2184,6 +2234,7 @@ const ArcFox = (() => {
     pinKey,
     isFavoritable,
     isNewTabUrl,
+    isBlankTab,
     isFirefoxNewTab,
     normUrl,
     sameUrl,
@@ -2233,6 +2284,7 @@ const ArcFox = (() => {
     setItemLocked,
     editItemUrl,
     setTabLocked,
+    rebaseTodayTabLock,
     resetLockedTab,
     replaceLockedTabUrl,
     editLockedTabUrl,
