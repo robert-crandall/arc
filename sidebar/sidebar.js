@@ -188,8 +188,18 @@ async function refresh() {
           state.tabParent.delete(t.id);
         }
       }
+      const privateCloseIds = state.private
+        ? state.tabs.filter((t) => !t.pinned && !(state.tabs.length === 1 && isBlankTab(t))).map((t) => t.id)
+        : [];
       state.cleanupPlan = state.private
-        ? { canCleanUp: false, closeTabIds: [], resetItemIds: [], resetTabIds: [], reorderItemIds: [], reorderTabIds: [] }
+        ? {
+            canCleanUp: privateCloseIds.length > 0,
+            closeTabIds: privateCloseIds,
+            resetItemIds: [],
+            resetTabIds: [],
+            reorderItemIds: [],
+            reorderTabIds: [],
+          }
         : ArcFox.getCleanupPlan({
             spaceId: state.spaceId,
             pins: state.pins,
@@ -631,6 +641,7 @@ function renderPrivate() {
   els.spaceName.textContent = "Private window";
   els.spaceIcon.hidden = true;
   renderToday();
+  updateCleanupControl();
   applySelection();
   address.update(activeTab());
   $("back").disabled = !activeTab();
@@ -1056,10 +1067,8 @@ els.pinned.addEventListener("click", (e) => {
   if (row.dataset.tab) {
     const tab = tabById(Number(row.dataset.tab));
     if (!tab) return;
-    const closeBtn = e.target.closest(".close");
-    if (closeBtn) {
-      if (closeBtn.dataset.action === "reset") ArcFox.resetLockedTab(tab.id).then(() => schedule(true));
-      else if (closeBtn.dataset.action !== "locked") closeTab(tab.id);
+    if (e.target.closest(".close")) {
+      closeTab(tab.id);
     } else if (e.target.closest(".audio")) {
       browser.tabs.update(tab.id, { muted: !tab.mutedInfo?.muted });
     } else {
@@ -1093,9 +1102,7 @@ els.pinned.addEventListener("click", (e) => {
 els.pinned.addEventListener("dblclick", (e) => {
   if (e.target.closest(".away-slash")) {
     const itemRow = e.target.closest("[data-item]");
-    const tabRow = e.target.closest("[data-tab]");
     if (itemRow) ArcFox.resetItem(itemRow.dataset.item).then(() => schedule(true));
-    else if (tabRow) ArcFox.resetLockedTab(Number(tabRow.dataset.tab)).then(() => schedule(true));
     return;
   }
   const row = e.target.closest(".tab.folder");
@@ -1176,8 +1183,30 @@ els.clear.addEventListener("blur", hideCleanupPreview);
 els.clear.addEventListener("click", async () => {
   hideCleanupPreview();
   if (!state.cleanupPlan.canCleanUp) return;
+  if (state.private) {
+    await newTabInSpace();
+    await removeTabs(state.cleanupPlan.closeTabIds);
+    return;
+  }
   await ArcFox.cleanUpSpace(state.spaceId, state.windowId);
   schedule(true);
+});
+
+els.clear.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  const reordered = state.cleanupPlan.reorderItemIds.length > 0 || state.cleanupPlan.reorderTabIds.length > 0;
+  showMenu(
+    [
+      {
+        label: "Save Current Locked Order as Default",
+        disabled: !reordered,
+        run: () => ArcFox.saveDefaultOrder(state.spaceId, state.windowId),
+      },
+    ],
+    e.clientX,
+    e.clientY,
+    () => schedule(true)
+  );
 });
 
 /* ---------- Drag and drop ---------- */
@@ -1420,7 +1449,7 @@ async function onTodayDrop(e) {
 
   try {
     // Dragging a pinned child subtab into Today promotes it to a root Today tab.
-    if (state.tabParent.get(tabId)?.itemId) await ArcFox.clearTabParent(tabId);
+    if ((await ArcFox.getTabParent(tabId))?.itemId) await ArcFox.clearTabParent(tabId);
     const fresh = await browser.tabs.query({ windowId: state.windowId });
     const cur = await browser.tabs.get(tabId);
     const familyScan = await ArcFox.scanTabs(await browser.tabs.query({}), await ArcFox.getState());
@@ -1433,6 +1462,15 @@ async function onTodayDrop(e) {
     }
     const target = targetId !== null && fresh.find((t) => t.id === targetId);
     let index = target ? target.index + (after ? 1 : 0) : fresh.length;
+    if (target && after) {
+      const targetRoots = fresh.filter(
+        (t) => t.id === target.id || (inSplit(target) && t.splitViewId === target.splitViewId)
+      );
+      const targetFamily = new Set(
+        targetRoots.flatMap((t) => [t.id, ...(familyScan.childrenByTab.get(t.id) || []).map((c) => c.id)])
+      );
+      index = Math.max(...fresh.filter((t) => targetFamily.has(t.id)).map((t) => t.index)) + 1;
+    }
     if (cur.windowId === state.windowId) {
       const movingBefore = fresh.filter((t) => moveSet.has(t.id) && t.index < index).length;
       index -= movingBefore;

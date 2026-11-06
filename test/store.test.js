@@ -217,6 +217,17 @@ test("normalizeSavedUrl and isTabAway handle scheme defaults, trailing slashes, 
     ArcFox.isTabAway({ url: "about:blank", status: "loading" }, "https://example.com/"),
     false
   );
+  assert.equal(
+    ArcFox.isTabAway({ url: "about:blank", status: "complete" }, "https://example.com/"),
+    true
+  );
+  assert.equal(
+    ArcFox.isTabAway(
+      { url: "https://example.com/?path=docs", status: "complete" },
+      "https://example.com/?path=docs/"
+    ),
+    true
+  );
 });
 
 test("single-level child subtabs attach under their root parent and promote on parent close", async () => {
@@ -443,5 +454,16 @@ test("reconciles child subtab parent across session-restore ID changes and prese
   const promotedItem = afterDelete.pins.get(spaceId).find((i) => i.id === folderItem.id);
   assert.equal(promotedItem.locked, true);
   assert.equal(promotedItem.parent, undefined);
+
+  // Moving a pinned item with a child subtab to another space preserves its child link across intermediate scans
+  const secondSpace = await ArcFox.saveSpace({ name: "Personal" });
+  const pinChild = addTab({ id: 96, url: "https://locked.example.com/sub", openerTabId: lockedToday.id });
+  await ArcFox.adoptTab(pinChild.id);
+  assert.deepEqual(await ArcFox.getTabParent(pinChild.id), { itemId: promotedItem.id });
+
+  await ArcFox.moveItem(promotedItem.id, ArcFox.pinKey(secondSpace.id));
+  const afterSpaceMove = await ArcFox.scanTabs(await browser.tabs.query({ windowId: 1 }), await ArcFox.getState());
+  assert.deepEqual(afterSpaceMove.tabParent.get(pinChild.id), { itemId: promotedItem.id });
+  assert.equal(afterSpaceMove.tabSpace.get(pinChild.id), secondSpace.id);
 });
 

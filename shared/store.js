@@ -72,7 +72,7 @@ const ArcFox = (() => {
   const isFolder = (item) => item?.type === "folder";
 
   /** Strip #fragment and trailing slash so minor URL differences don't count as "away". */
-  const normUrl = (u) => (u || "").replace(/#.*$/, "").replace(/^(https?:\/\/.+)\/$/, "$1");
+  const normUrl = (u) => (u || "").replace(/#.*$/, "").replace(/^(https?:\/\/[^?]+)\/(\?.*)?$/, "$1$2");
   const sameUrl = (a, b) => normUrl(a) === normUrl(b);
 
   /**
@@ -84,7 +84,7 @@ const ArcFox = (() => {
     if (!trimmed || /\s/.test(trimmed)) return null;
     let candidate = trimmed;
     if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(candidate)) {
-      if (!/^(localhost(?::\d+)?(?:\/|$)|[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?(?:\/|$|\?))/i.test(candidate)) {
+      if (!/^(localhost(?::\d+)?(?:[/?#]|$)|[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?(?:[/?#]|$))/i.test(candidate)) {
         return null;
       }
       candidate = `https://${candidate}`;
@@ -101,9 +101,8 @@ const ArcFox = (() => {
 
   /** True when an open tab has navigated away from its saved/locked URL. */
   function isTabAway(tab, savedUrl) {
-    if (!tab || !savedUrl) return false;
-    if (tab.status === "loading" && (!tab.url || tab.url === "about:blank")) return false;
-    if (!tab.url || tab.url === "about:blank") return false;
+    if (!tab || !savedUrl || !tab.url) return false;
+    if (tab.status === "loading" && tab.url === "about:blank") return false;
     return !sameUrl(tab.url, savedUrl);
   }
 
@@ -195,6 +194,8 @@ const ArcFox = (() => {
         out.push(item, ...(byFolder.get(item.id) || []));
       } else if (!item.parent) {
         out.push(reorderedTop[topIdx++]);
+      } else if (!byFolder.has(item.parent)) {
+        out.push(item);
       }
     }
     return out;
@@ -515,6 +516,7 @@ const ArcFox = (() => {
   const setTabLockedValue = async (tabId, lock) => {
     if (!lock || !lock.url) return clearTabLockedValue(tabId);
     try {
+      await ensureTabRootUid(tabId);
       await browser.sessions.setTabValue(tabId, LOCK_VALUE, lock);
       noteTabValue(tabId, LOCK_VALUE, lock);
     } catch {
@@ -610,7 +612,10 @@ const ArcFox = (() => {
         }
       }
       if (lockVal && typeof lockVal.url === "string") {
-        if (tabItem.has(tab.id)) {
+        if (
+          tabItem.has(tab.id) ||
+          (byRootUid.has(rootUidVal) && byRootUid.get(rootUidVal).id !== tab.id)
+        ) {
           clearTabLockedValue(tab.id);
         } else {
           tabLocked.set(tab.id, {
@@ -753,12 +758,11 @@ const ArcFox = (() => {
       }
       if (root.itemId) {
         const parentSpace = pinItemSpace.get(root.itemId);
-        const childSpace = tabSpace.get(tab.id);
-        if (!parentSpace || (childSpace && childSpace !== parentSpace)) {
+        if (!parentSpace) {
           clearTabParent(tab.id);
           continue;
         }
-        if (!childSpace) {
+        if (tabSpace.get(tab.id) !== parentSpace) {
           tabSpace.set(tab.id, parentSpace);
           setTabSpace(tab.id, parentSpace);
         }
@@ -771,15 +775,17 @@ const ArcFox = (() => {
       } else if (root.tabId) {
         const parentTab = resolveLiveParentTab(root);
         const parentSpace = tabSpace.get(root.tabId) || externalParents.get(root.tabId)?.spaceId || null;
-        const childSpace = tabSpace.get(tab.id) || null;
         if (
           root.tabId === tab.id ||
           !parentTab ||
-          parentTab.windowId !== tab.windowId ||
-          (parentSpace && childSpace && parentSpace !== childSpace)
+          parentTab.windowId !== tab.windowId
         ) {
           clearTabParent(tab.id);
           continue;
+        }
+        if (parentSpace && tabSpace.get(tab.id) !== parentSpace) {
+          tabSpace.set(tab.id, parentSpace);
+          await setTabSpace(tab.id, parentSpace);
         }
         const rootUid = root.rootUid || tabRootUid.get(root.tabId) || externalParents.get(root.tabId)?.rootUid;
         const stored = rootUid ? { tabId: root.tabId, rootUid } : { tabId: root.tabId };
@@ -1073,8 +1079,6 @@ const ArcFox = (() => {
           index: tab.index + 1,
         });
         moved = replacement.id;
-        await markClosing(tabId);
-        await browser.tabs.remove(tabId);
         for (const child of children) {
           if (child.cookieStoreId === space.container) {
             await setTabParent(child.id, { tabId: moved });
@@ -1083,6 +1087,8 @@ const ArcFox = (() => {
             await clearTabParent(child.id);
           }
         }
+        await markClosing(tabId);
+        await browser.tabs.remove(tabId);
       } else {
         await setTabSpace(tabId, spaceId);
         for (const child of children) {
@@ -1098,6 +1104,7 @@ const ArcFox = (() => {
                 t.id !== tabId &&
                 !scanned.tabItem.has(t.id) &&
                 !scanned.tabParent.has(t.id) &&
+                scanned.tabLocked.has(t.id) &&
                 scanned.tabSpace.get(t.id) === spaceId
             )
             .map((t) => {
@@ -1180,10 +1187,12 @@ const ArcFox = (() => {
       }
     }
     if (!family.length) return;
+    const currentTab = winTabs.find((t) => t.id === tab.id);
+    if (!currentTab) return;
     const maxIndex = Math.max(...family.map((t) => t.index));
     let targetIndex = maxIndex + 1;
-    if (tab.index < targetIndex) targetIndex -= 1;
-    if (tab.index !== targetIndex) {
+    if (currentTab.index < targetIndex) targetIndex -= 1;
+    if (currentTab.index !== targetIndex) {
       await browser.tabs.move(tab.id, { index: targetIndex }).catch(() => {});
     }
   }
@@ -1437,17 +1446,25 @@ const ArcFox = (() => {
         const containerItems = to.filter((i) => !isFolder(i) && (i.parent || null) === newParent);
         assignLockedOrder(containerItems, containerItems.indexOf(item), true);
       }
-      await writeLists({ [found.key]: fromRest, [toKey]: to });
       const spaceId = spaceOfKey(toKey);
       const allTabs = await browser.tabs.query({});
       const scanned = await scanTabs(allTabs, state);
       const movedIds = [itemId, ...children.map((c) => c.id)];
-      for (const id of movedIds) {
-        const boundTab = scanned.bound.get(id);
-        if (spaceId && boundTab) await setTabSpace(boundTab.id, spaceId);
-        for (const childTab of scanned.childrenByItem.get(id) || []) {
-          if (spaceId) await setTabSpace(childTab.id, spaceId);
-          else await clearTabParent(childTab.id);
+      if (!spaceId) {
+        for (const id of movedIds) {
+          for (const childTab of scanned.childrenByItem.get(id) || []) {
+            await clearTabParent(childTab.id);
+          }
+        }
+      }
+      await writeLists({ [found.key]: fromRest, [toKey]: to });
+      if (spaceId) {
+        for (const id of movedIds) {
+          const boundTab = scanned.bound.get(id);
+          if (boundTab) await setTabSpace(boundTab.id, spaceId);
+          for (const childTab of scanned.childrenByItem.get(id) || []) {
+            await setTabSpace(childTab.id, spaceId);
+          }
         }
       }
     }
