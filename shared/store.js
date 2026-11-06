@@ -73,8 +73,8 @@ const ArcFox = (() => {
 
   const isFolder = (item) => item?.type === "folder";
 
-  /** Strip #fragment and trailing slash so minor URL differences don't count as "away". */
-  const normUrl = (u) => (u || "").replace(/#.*$/, "").replace(/^(https?:\/\/[^?]+)\/(\?.*)?$/, "$1$2");
+  /** Strip non-route #fragment and trailing slash so minor URL differences don't count as "away". */
+  const normUrl = (u) => (u || "").replace(/#(?![!/]).*$/, "").replace(/^(https?:\/\/[^?#]+)\/([?#].*)?$/, "$1$2");
   const sameUrl = (a, b) => normUrl(a) === normUrl(b);
 
   /**
@@ -1940,10 +1940,12 @@ const ArcFox = (() => {
       const afterTabs = (await browser.tabs.query({ windowId }))
         .slice()
         .sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
-      const targetSet = new Set(plan.reorderedTodayTabIds);
+      const afterIds = new Set(afterTabs.map((t) => t.id));
+      const liveReorderedIds = plan.reorderedTodayTabIds.filter((id) => afterIds.has(id));
+      const targetSet = new Set(liveReorderedIds);
       let nextLocked = 0;
       const desiredIds = afterTabs.map((t) =>
-        targetSet.has(t.id) ? plan.reorderedTodayTabIds[nextLocked++] : t.id
+        targetSet.has(t.id) ? liveReorderedIds[nextLocked++] : t.id
       );
       const currentIds = afterTabs.map((t) => t.id);
       for (let idx = 0; idx < desiredIds.length; idx++) {

@@ -228,6 +228,20 @@ test("normalizeSavedUrl and isTabAway handle scheme defaults, trailing slashes, 
     ),
     true
   );
+  assert.equal(
+    ArcFox.isTabAway(
+      { url: "https://app.example.com/#/settings", status: "complete" },
+      "https://app.example.com/#/inbox"
+    ),
+    true
+  );
+  assert.equal(
+    ArcFox.isTabAway(
+      { url: "https://example.com/docs#section-2", status: "complete" },
+      "https://example.com/docs"
+    ),
+    false
+  );
 });
 
 test("single-level child subtabs attach under their root parent and promote on parent close", async () => {
