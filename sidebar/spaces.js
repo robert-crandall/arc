@@ -1,6 +1,6 @@
 /* global ArcFox */
 /* Space switcher footer; opens the space editor window. */
-import { h, showMenu, confirmDialog } from "./ui.js";
+import { h, showMenu, confirmDialog, svgSpaceBadge } from "./ui.js";
 
 /** Open the space editor as a small window centered over the browser window. */
 export async function openSpaceEditor(windowId, spaceId = null) {
@@ -127,7 +127,9 @@ export function createSpacesBar(ctx) {
               dataset: { space: s.id },
               style: { "--c": ArcFox.COLORS[s.color] || ArcFox.COLORS.blue },
             },
-            s.icon ? h("span", { className: "space-emoji" }, s.icon) : h("span", { className: "space-dot" })
+            s.icon
+              ? h("span", { className: "space-emoji" }, s.icon)
+              : h("span", { className: "space-emoji space-default-badge" }, svgSpaceBadge())
           )
         )
       );

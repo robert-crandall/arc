@@ -1,5 +1,5 @@
 /* global ArcFox */
-import { h, lucide, setIcon, syncChildren, showMenu, hideMenu, openDialog } from "./ui.js";
+import { h, lucide, setIcon, syncChildren, showMenu, hideMenu, openDialog, svgSpaceBadge } from "./ui.js";
 import { createAddressBar } from "./address.js";
 import { createSpacesBar } from "./spaces.js";
 import { createDownloads } from "./downloads.js";
@@ -229,8 +229,12 @@ function render() {
   } catch {
     // no storage here: new tabs just start on the default color
   }
-  els.spaceIcon.textContent = sp?.icon || "";
-  els.spaceIcon.hidden = !sp?.icon;
+  if (sp?.icon) {
+    els.spaceIcon.textContent = sp.icon;
+  } else {
+    els.spaceIcon.replaceChildren(svgSpaceBadge());
+  }
+  els.spaceIcon.hidden = false;
   els.spaceName.textContent = sp?.name || "";
 
   applyCollapsed();
@@ -379,22 +383,28 @@ const LUCIDE = {
     "M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594zM20 2v4M22 4h-4M2 20a2 2 0 1 0 4 0a2 2 0 1 0-4 0",
 };
 
-function svgIcon(d) {
+function svgFolderIcon(open) {
   const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("viewBox", "0 0 16 16");
-  const path = document.createElementNS(SVG_NS, "path");
-  path.setAttribute("d", d);
-  path.setAttribute("fill", "none");
-  path.setAttribute("stroke", "currentColor");
-  path.setAttribute("stroke-width", "1.4");
-  path.setAttribute("stroke-linejoin", "round");
-  svg.append(path);
+  const back = document.createElementNS(SVG_NS, "path");
+  back.setAttribute(
+    "d",
+    "M1.75 4.25a1.5 1.5 0 0 1 1.5-1.5h3l1.4 1.5h5.1a1.5 1.5 0 0 1 1.5 1.5v6a1.5 1.5 0 0 1-1.5 1.5h-9.5a1.5 1.5 0 0 1-1.5-1.5Z"
+  );
+  back.setAttribute("fill", "currentColor");
+  back.setAttribute("fill-opacity", open ? "0.42" : "0.52");
+  const front = document.createElementNS(SVG_NS, "path");
+  front.setAttribute(
+    "d",
+    open
+      ? "M1.75 11.75 2.95 6.8a1.2 1.2 0 0 1 1.15-.9h9.1a.85.85 0 0 1 .82 1.08l-1.2 4.85a1.2 1.2 0 0 1-1.15.92H3.25a1.5 1.5 0 0 1-1.5-1.5Z"
+      : "M1.75 6.1h12.5v5.65a1.5 1.5 0 0 1-1.5 1.5h-9.5a1.5 1.5 0 0 1-1.5-1.5Z"
+  );
+  front.setAttribute("fill", "currentColor");
+  front.setAttribute("fill-opacity", "0.94");
+  svg.append(back, front);
   return svg;
 }
-
-const FOLDER_CLOSED = "M1.75 4.25a1.5 1.5 0 0 1 1.5-1.5h3l1.5 1.5h5a1.5 1.5 0 0 1 1.5 1.5v6a1.5 1.5 0 0 1-1.5 1.5h-9.5a1.5 1.5 0 0 1-1.5-1.5z";
-const FOLDER_OPEN =
-  "M1.75 11.75v-7.5a1.5 1.5 0 0 1 1.5-1.5h3l1.5 1.5h4.5a1.5 1.5 0 0 1 1.5 1.5v1M1.75 11.75l1.7-4.6a1.2 1.2 0 0 1 1.1-.8h9.2a.8.8 0 0 1 .75 1.1l-1.6 4.3a1.2 1.2 0 0 1-1.1.8H3.25a1.5 1.5 0 0 1-1.5-1.5";
 
 function pinRow(item, parent) {
   let el = pinEls.get(item.id);
@@ -425,14 +435,15 @@ function pinRow(item, parent) {
   return el;
 }
 
-function folderRow(folder) {
+function folderRow(folder, childCount = 0) {
   let el = pinEls.get(folder.id);
   if (!el || !el.classList.contains("folder")) {
     el = h(
       "li",
       { className: "tab folder", draggable: true, dataset: { item: folder.id } },
       h("span", { className: "favicon folder-icon" }),
-      h("span", { className: "title" })
+      h("span", { className: "title" }),
+      h("span", { className: "folder-count" })
     );
     pinEls.set(folder.id, el);
   }
@@ -443,16 +454,31 @@ function folderRow(folder) {
   const shape = folder.open ? "open" : "closed";
   if (icon.dataset.shape !== shape) {
     icon.dataset.shape = shape;
-    icon.replaceChildren(svgIcon(folder.open ? FOLDER_OPEN : FOLDER_CLOSED));
+    icon.replaceChildren(svgFolderIcon(!!folder.open));
   }
   const title = el.querySelector(".title");
   if (title && title.textContent !== folder.name) title.textContent = folder.name;
+  const countEl = el.querySelector(".folder-count");
+  const countText = childCount > 0 ? String(childCount) : "";
+  if (countEl && countEl.textContent !== countText) countEl.textContent = countText;
   el.title = folder.name;
   return el;
 }
 
 function renderPinned() {
-  const folderIds = new Set(state.pins.filter(ArcFox.isFolder).map((f) => f.id));
+  const folderIds = new Set();
+  const childrenByFolder = new Map();
+  for (const item of state.pins) {
+    if (ArcFox.isFolder(item)) folderIds.add(item.id);
+    if (item.parent) {
+      let list = childrenByFolder.get(item.parent);
+      if (!list) {
+        list = [];
+        childrenByFolder.set(item.parent, list);
+      }
+      list.push(item);
+    }
+  }
   const nodes = [];
   const pushPin = (item, parent) => {
     nodes.push(pinRow(item, parent));
@@ -463,8 +489,9 @@ function renderPinned() {
   for (const item of state.pins) {
     if (item.parent && folderIds.has(item.parent)) continue; // rendered under its folder
     if (ArcFox.isFolder(item)) {
-      nodes.push(folderRow(item));
-      if (item.open) for (const child of state.pins) if (child.parent === item.id) pushPin(child, item.id);
+      const children = childrenByFolder.get(item.id) || [];
+      nodes.push(folderRow(item, children.length));
+      if (item.open) for (const child of children) pushPin(child, item.id);
     } else {
       pushPin(item, "");
     }
@@ -565,8 +592,8 @@ function renderToday() {
   // A tab Firefox just made sits at the end of its list and has no space yet;
   // draw it where Arc is about to put it so the row never moves.
   tabs.sort((a, b) => (preSwapTabs.has(b.id) ? 1 : 0) - (preSwapTabs.has(a.id) ? 1 : 0));
-  // The "+ New Tab" button only shows while Today is empty; otherwise Cmd+T.
-  els.newTab.hidden = allToday.length > 0;
+  // Keep "+ New Tab" persistently visible at the top of Today tabs.
+  els.newTab.hidden = false;
   // A lone blank tab has nothing to close into: no ✕ on it.
   els.today.classList.toggle("only-blank", allToday.length === 1 && isBlankTab(allToday[0]));
   const nodes = [];
@@ -673,6 +700,13 @@ $("forward").addEventListener("click", () => activeTab() && browser.tabs.goForwa
 $("reload").addEventListener("click", (e) => {
   const tab = activeTab();
   if (tab) browser.tabs.reload(tab.id, { bypassCache: e.shiftKey });
+});
+$("sidebar-toggle")?.addEventListener("click", () => {
+  if (browser.sidebarAction?.close) {
+    browser.sidebarAction.close().catch(() => {});
+  } else if (browser.sidebarAction?.toggle) {
+    browser.sidebarAction.toggle().catch(() => {});
+  }
 });
 
 /** Close a tab; closing the last one of this space leaves a blank tab, so the window stays. */
@@ -1585,16 +1619,21 @@ for (const ev of ["onActivated", "onMoved", "onAttached", "onDetached"]) {
 }
 
 /** Hold a port so the background page stays awake while the sidebar is open. */
-function keepBackgroundAwake() {
-  const port = browser.runtime.connect({ name: "arcsidebar:sidebar" });
+function keepBackgroundAwake(windowId) {
+  const port = browser.runtime.connect({ name: `arcsidebar:sidebar:${windowId}` });
+  browser.runtime.sendMessage({
+    type: "arcfox:address-editing",
+    windowId,
+    editing: document.activeElement === $("url"),
+  }).catch(() => {});
   // Only an extension reload drops the port; reconnect once it is back.
-  port.onDisconnect.addListener(() => setTimeout(keepBackgroundAwake, 1000));
+  port.onDisconnect.addListener(() => setTimeout(() => keepBackgroundAwake(windowId), 1000));
 }
 
 (async () => {
-  keepBackgroundAwake();
   const win = await browser.windows.getCurrent();
   state.windowId = win.id;
+  keepBackgroundAwake(win.id);
   // Private windows show tabs only — no favorites, pins, folders or spaces.
   state.private = win.incognito;
   document.body.classList.toggle("private", state.private);

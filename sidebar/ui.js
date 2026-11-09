@@ -3,6 +3,20 @@ import { h } from "./dom.js";
 
 export { h, letterFor, lucide, setIcon, syncChildren } from "./dom.js";
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** Default shield/crest glyph for spaces that have no custom emoji icon. */
+export function svgSpaceBadge() {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("class", "space-badge-svg");
+  const path = document.createElementNS(SVG_NS, "path");
+  path.setAttribute("d", "M8 2.2 12.6 4v3.8c0 3.1-2 5.3-4.6 6.2-2.6-.9-4.6-3.1-4.6-6.2V4L8 2.2Z");
+  path.setAttribute("fill", "currentColor");
+  svg.appendChild(path);
+  return svg;
+}
+
 /* ---------- Context menu ---------- */
 
 const menuEl = document.getElementById("menu");

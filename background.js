@@ -36,6 +36,8 @@ const COLOR_MARKS = {
   pink: "\u2064",
   purple: "\uFEFF",
 };
+const EDITING_MARK = "\u200B";
+const editingWindows = new Set();
 
 /** Write the space-colour marker into the window title. */
 async function applyWindowMarks(windowId) {
@@ -47,6 +49,7 @@ async function applyWindowMarks(windowId) {
     const space = state.spaces.find((s) => s.id === spaceId);
     mark = COLOR_MARKS[space?.color] || COLOR_MARKS.purple;
   }
+  if (editingWindows.has(windowId)) mark += EDITING_MARK;
   await browser.windows.update(windowId, { titlePreface: mark });
 }
 
@@ -64,6 +67,11 @@ function refreshWindowMarks() {
 
 browser.runtime.onMessage.addListener((msg) => {
   if (msg?.type === "arcfox:changed") refreshWindowMarks();
+  if (msg?.type === "arcfox:address-editing" && msg.windowId !== undefined) {
+    if (msg.editing) editingWindows.add(msg.windowId);
+    else editingWindows.delete(msg.windowId);
+    applyWindowMarks(msg.windowId).catch(() => {});
+  }
 });
 
 /* ---------- Tab badges from other extensions ---------- */
@@ -386,6 +394,7 @@ browser.tabs.onActivated.addListener(async ({ tabId, windowId }) => {
 });
 browser.tabs.onDetached.addListener((tabId, info) => dropFromMru(tabId, info.oldWindowId));
 browser.windows.onRemoved.addListener(async (windowId) => {
+  editingWindows.delete(windowId);
   (await mruAll()).delete(windowId);
   await saveMru();
 });
@@ -889,7 +898,14 @@ browser.commands.onCommand.addListener(async (command) => {
 // delays the first Cmd/Ctrl+T or Cmd/Ctrl+W noticeably. An open sidebar holds a
 // port, which keeps the page alive for as long as Arc is on screen.
 browser.runtime.onConnect.addListener((port) => {
-  port.onDisconnect.addListener(() => {});
+  const match = /^arcsidebar:sidebar:(\d+)$/.exec(port.name || "");
+  const windowId = match ? Number(match[1]) : null;
+  port.onDisconnect.addListener(() => {
+    if (windowId !== null) {
+      editingWindows.delete(windowId);
+      applyWindowMarks(windowId).catch(() => {});
+    }
+  });
 });
 
 browser.action.onClicked.addListener(() => {

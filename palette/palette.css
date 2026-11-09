@@ -79,6 +79,7 @@ body {
 .list li.selected .chip { background: #fff; }
 
 .icon { width: 16px; height: 16px; display: grid; place-items: center; color: var(--muted); font-size: 15px; }
+.list li.selected .icon { color: var(--base); }
 .icon img { width: 16px; height: 16px; }
 .icon .letter { width: 16px; height: 16px; font-size: 9px; border-radius: 4px; }
 .letter { display: grid; place-items: center; font-weight: 600; color: #fff; }
