@@ -336,6 +336,8 @@ export function createDownloads(ctx) {
       badgeEl.hidden = nodes.length === 0;
     }
     if (toggleBtn) {
+      toggleBtn.setAttribute("aria-controls", ctx.el.id);
+      toggleBtn.setAttribute("aria-expanded", String(trayOpen && nodes.length > 0));
       toggleBtn.classList.toggle("has-items", nodes.length > 0);
       toggleBtn.classList.toggle("active", trayOpen && nodes.length > 0);
     }

@@ -2,10 +2,10 @@
 :root {
   --space: #5b7489; /* set per space from JS */
   --base: #141720;
-  --bg-top: color-mix(in srgb, var(--space) 8%, #13161f);
-  --bg-mid: color-mix(in srgb, var(--space) 24%, #212834);
-  --bg-bot-start: color-mix(in srgb, var(--space) 48%, #415263);
-  --bg-bot-end: color-mix(in srgb, var(--space) 56%, #53687b);
+  --bg-top: color-mix(in srgb, var(--space) 6%, #11141c);
+  --bg-mid: color-mix(in srgb, var(--space) 12%, #181e29);
+  --bg-bot-start: color-mix(in srgb, var(--space) 17%, #202937);
+  --bg-bot-end: color-mix(in srgb, var(--space) 20%, #263040);
   --sidebar-bg: linear-gradient(
     173deg,
     var(--bg-top) 0%,
@@ -15,8 +15,8 @@
     var(--bg-bot-start) 68.7%,
     var(--bg-bot-end) 100%
   );
-  --fg: #f2f4f8;
-  --muted: rgba(214, 224, 236, 0.56);
+  --fg: #f5f7fa;
+  --muted: rgba(214, 224, 236, 0.82);
   --tile: rgba(255, 255, 255, 0.06);
   --tile-hover: rgba(255, 255, 255, 0.11);
   --tile-active: rgba(255, 255, 255, 0.18);

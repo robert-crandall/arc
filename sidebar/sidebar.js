@@ -1621,6 +1621,11 @@ for (const ev of ["onActivated", "onMoved", "onAttached", "onDetached"]) {
 /** Hold a port so the background page stays awake while the sidebar is open. */
 function keepBackgroundAwake(windowId) {
   const port = browser.runtime.connect({ name: `arcsidebar:sidebar:${windowId}` });
+  browser.runtime.sendMessage({
+    type: "arcfox:address-editing",
+    windowId,
+    editing: document.activeElement === $("url"),
+  }).catch(() => {});
   // Only an extension reload drops the port; reconnect once it is back.
   port.onDisconnect.addListener(() => setTimeout(() => keepBackgroundAwake(windowId), 1000));
 }

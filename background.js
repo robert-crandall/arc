@@ -900,11 +900,9 @@ browser.commands.onCommand.addListener(async (command) => {
 browser.runtime.onConnect.addListener((port) => {
   const match = /^arcsidebar:sidebar:(\d+)$/.exec(port.name || "");
   const windowId = match ? Number(match[1]) : null;
-  if (windowId !== null && editingWindows.delete(windowId)) {
-    applyWindowMarks(windowId).catch(() => {});
-  }
   port.onDisconnect.addListener(() => {
-    if (windowId !== null && editingWindows.delete(windowId)) {
+    if (windowId !== null) {
+      editingWindows.delete(windowId);
       applyWindowMarks(windowId).catch(() => {});
     }
   });
