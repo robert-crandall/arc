@@ -69,8 +69,12 @@ export function createDownloads(ctx) {
   const rows = new Map(); // id -> element
   const rates = new Map(); // id -> { at, bytes, rate }
   const finishedAt = new Map(); // id -> when it left in_progress
+  const toggleBtn = document.getElementById("downloads-btn");
+  const badgeEl = document.getElementById("downloads-badge");
   let timer = 0;
+  let expireTimer = 0;
   let canOpen = false;
+  let trayOpen = false;
 
   const list = h("ul", { className: "dl-list" });
   const clear = h(
@@ -121,8 +125,22 @@ export function createDownloads(ctx) {
 
   /** Expire rows that finished a while ago so the tray doesn't become history. */
   function expire() {
-    const cutoff = Date.now() - DONE_LINGER_MS;
-    for (const [id, at] of finishedAt) if (at < cutoff) dismissed.add(id);
+    clearTimeout(expireTimer);
+    expireTimer = 0;
+    const now = Date.now();
+    const cutoff = now - DONE_LINGER_MS;
+    let nextWait = Infinity;
+    for (const [id, at] of finishedAt) {
+      if (at <= cutoff) {
+        dismissed.add(id);
+        forget(id);
+      } else {
+        nextWait = Math.min(nextWait, at + DONE_LINGER_MS - now);
+      }
+    }
+    if (Number.isFinite(nextWait)) {
+      expireTimer = setTimeout(render, nextWait);
+    }
   }
 
   async function poll() {
@@ -313,17 +331,36 @@ export function createDownloads(ctx) {
     const active = list_.filter(inFlight).length;
     head.children[1].textContent = active ? `${active} active` : "";
     clear.hidden = !list_.some((item) => !inFlight(item));
-    ctx.el.hidden = nodes.length === 0;
+    if (badgeEl) {
+      badgeEl.textContent = String(nodes.length);
+      badgeEl.hidden = nodes.length === 0;
+    }
+    if (toggleBtn) {
+      toggleBtn.classList.toggle("has-items", nodes.length > 0);
+      toggleBtn.classList.toggle("active", trayOpen && nodes.length > 0);
+    }
+    if (nodes.length === 0) trayOpen = false;
+    ctx.el.hidden = nodes.length === 0 || !trayOpen;
     pump();
   }
 
   /* ---------- Wiring ---------- */
 
+  toggleBtn?.addEventListener("click", () => {
+    if (visible().length === 0) {
+      browser.downloads.showDefaultFolder?.();
+      return;
+    }
+    trayOpen = !trayOpen;
+    render();
+  });
+
   browser.downloads.onCreated.addListener((item) => {
     dismissed.delete(item.id);
     note(item);
+    if (mine(item)) trayOpen = true;
     render();
-    if (isMoving(item)) poll();
+    if (mine(item) && isMoving(item)) poll();
   });
 
   browser.downloads.onChanged.addListener(async (delta) => {
@@ -351,6 +388,7 @@ export function createDownloads(ctx) {
       for (const item of [...running, ...paused]) {
         track(item);
         note(item);
+        if (mine(item)) trayOpen = true;
       }
       render();
     },

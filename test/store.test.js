@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { formatAddressParts } from "../sidebar/suggest.js";
 
 const storeCode = fs.readFileSync(new URL("../shared/store.js", import.meta.url), "utf8");
 
@@ -417,6 +418,31 @@ test("Clean Up closes unlocked tabs, resets drifted locked tabs, and restores de
     remainingToday.map((t) => t.id),
     [locked1.id, locked2.id]
   );
+});
+
+test("formatAddressParts splits URLs into host and optional path for two-line address bar", () => {
+  const { ArcFox } = createHarness();
+  globalThis.ArcFox = ArcFox;
+  assert.deepEqual(formatAddressParts("https://www.github.com/github/santa/pull/53/changes"), {
+    host: "github.com",
+    path: "/github/santa/pull/53/changes",
+  });
+  assert.deepEqual(formatAddressParts("https://github.com/"), {
+    host: "github.com",
+    path: "",
+  });
+  assert.deepEqual(formatAddressParts("https://example.com:8080/docs?tab=api#top"), {
+    host: "example.com:8080",
+    path: "/docs?tab=api#top",
+  });
+  assert.deepEqual(formatAddressParts("about:newtab"), {
+    host: "",
+    path: "",
+  });
+  assert.deepEqual(formatAddressParts("about:config"), {
+    host: "about:config",
+    path: "",
+  });
 });
 
 test("reconciles child subtab parent across session-restore ID changes and preserves locks across folder/space moves", async () => {

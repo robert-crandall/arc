@@ -25,6 +25,26 @@ export function pretty(url) {
   return url;
 }
 
+/**
+ * Split a URL into `{ host, path }` for the two-line centered address bar.
+ * Root paths ("/") omit `path` so only the host line renders.
+ */
+export function formatAddressParts(url) {
+  if (!url || ArcFox.isNewTabUrl(url) || url === "about:blank") return { host: "", path: "" };
+  try {
+    const u = new URL(url);
+    if (/^https?:$/.test(u.protocol)) {
+      const host = u.host.replace(/^www\./, "");
+      const rest = `${u.pathname}${u.search}${u.hash}`;
+      const path = rest && rest !== "/" ? rest : "";
+      return { host, path };
+    }
+  } catch {
+    // non-standard URL: show as host line
+  }
+  return { host: url, path: "" };
+}
+
 export async function engineName() {
   try {
     return (await browser.search.get()).find((e) => e.isDefault)?.name || "the web";

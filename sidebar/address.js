@@ -1,7 +1,7 @@
 /* global ArcFox */
 /* Arc-style address bar: shows the domain, edits the full URL, suggests tabs + history. */
 import { h, setIcon } from "./ui.js";
-import { resolve, pretty, runSearch, switchToTab, suggestFor, topSiteItems } from "./suggest.js";
+import { resolve, pretty, formatAddressParts, runSearch, switchToTab, suggestFor, topSiteItems } from "./suggest.js";
 
 /**
  * ctx: {
@@ -12,6 +12,8 @@ import { resolve, pretty, runSearch, switchToTab, suggestFor, topSiteItems } fro
 export function createAddressBar(ctx) {
   const box = document.getElementById("address");
   const input = document.getElementById("url");
+  const addrHost = document.getElementById("addr-host");
+  const addrPath = document.getElementById("addr-path");
   const lock = document.getElementById("lock");
   const copy = document.getElementById("copy-url");
   const list = document.getElementById("suggest");
@@ -21,6 +23,22 @@ export function createAddressBar(ctx) {
   let selected = 0;
   let token = 0;
   let itemsFor = "";
+
+  function notifyEditing(editing) {
+    const windowId = ctx.windowId?.();
+    if (windowId == null) return;
+    browser.runtime.sendMessage({ type: "arcfox:address-editing", windowId, editing }).catch(() => {});
+  }
+  window.addEventListener("pagehide", () => notifyEditing(false));
+
+  function updateDisplay(rawUrl) {
+    const { host, path } = formatAddressParts(rawUrl);
+    const isEmpty = !host;
+    box.classList.toggle("is-empty", isEmpty);
+    addrHost.textContent = isEmpty ? "Search or enter address" : host;
+    addrPath.textContent = path;
+    addrPath.hidden = !path;
+  }
 
   async function go(target) {
     // Extensions may not open Firefox's own pages (about:config, ...).
@@ -152,6 +170,7 @@ export function createAddressBar(ctx) {
 
   input.addEventListener("focus", () => {
     box.classList.add("editing");
+    notifyEditing(true);
     const tab = newTabMode ? null : ctx.activeTab();
     if (!newTabMode) input.value = tab && !ArcFox.isNewTabUrl(tab.url) ? tab.url : "";
     if (tab) setIcon(addrIcon, tab.favIconUrl, tab.url);
@@ -165,6 +184,7 @@ export function createAddressBar(ctx) {
 
   input.addEventListener("blur", () => {
     box.classList.remove("editing", "new-tab");
+    notifyEditing(false);
     newTabMode = false;
     items = [];
     token++;
@@ -182,9 +202,11 @@ export function createAddressBar(ctx) {
 
   function show(tab) {
     if (document.activeElement === input) return;
-    input.value = tab ? pretty(tab.url) : "";
-    input.title = tab?.url || "";
-    const secure = !!tab && /^https:/i.test(tab.url);
+    const rawUrl = tab?.url || "";
+    input.value = tab ? pretty(rawUrl) : "";
+    input.title = rawUrl;
+    updateDisplay(rawUrl);
+    const secure = !!tab && /^https:/i.test(rawUrl);
     lock.classList.toggle("secure", secure);
     lock.title = secure ? "Secure connection" : "";
   }

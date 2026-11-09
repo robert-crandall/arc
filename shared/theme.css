@@ -1,42 +1,35 @@
 /* Color tokens shared by the sidebar and the space editor. */
 :root {
-  --space: #af51f5; /* set per space from JS */
-  --base: #efedf5;
-  --fg: #1d1b24;
-  --muted: #6d6879;
-  --tile: rgba(255, 255, 255, 0.22);
-  --tile-hover: rgba(0, 0, 0, 0.05);
-  --tile-active: #ffffff;
-  --row-hover: rgba(0, 0, 0, 0.06);
-  --row-active: rgba(255, 255, 255, 0.78);
-  --field: rgba(0, 0, 0, 0.055);
-  --field-focus: rgba(255, 255, 255, 0.9);
-  --shadow: 0 1px 3px rgba(20, 10, 40, 0.14), 0 0 0 0.5px rgba(20, 10, 40, 0.06);
-  --menu-bg: #ffffff;
-  --divider: rgba(20, 10, 40, 0.1);
+  --space: #5b7489; /* set per space from JS */
+  --base: #141720;
+  --bg-top: color-mix(in srgb, var(--space) 8%, #13161f);
+  --bg-mid: color-mix(in srgb, var(--space) 24%, #212834);
+  --bg-bot-start: color-mix(in srgb, var(--space) 48%, #415263);
+  --bg-bot-end: color-mix(in srgb, var(--space) 56%, #53687b);
+  --sidebar-bg: linear-gradient(
+    173deg,
+    var(--bg-top) 0%,
+    var(--bg-top) 51.5%,
+    var(--bg-mid) 51.7%,
+    var(--bg-mid) 68.5%,
+    var(--bg-bot-start) 68.7%,
+    var(--bg-bot-end) 100%
+  );
+  --fg: #f2f4f8;
+  --muted: rgba(214, 224, 236, 0.56);
+  --tile: rgba(255, 255, 255, 0.06);
+  --tile-hover: rgba(255, 255, 255, 0.11);
+  --tile-active: rgba(255, 255, 255, 0.18);
+  --row-hover: rgba(255, 255, 255, 0.07);
+  --row-active: rgba(14, 18, 26, 0.48);
+  --field: rgba(255, 255, 255, 0.065);
+  --field-focus: #1f2430;
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.26), inset 0 0 0 0.5px rgba(255, 255, 255, 0.08);
+  --menu-bg: #1e232e;
+  --divider: rgba(255, 255, 255, 0.12);
   --tint: 16%;
-  --btn-hover: rgba(0, 0, 0, 0.08);
-  --radius: 10px;
-  color-scheme: light;
+  --btn-hover: rgba(255, 255, 255, 0.1);
+  --radius: 12px;
+  color-scheme: dark;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --base: #1c1a22;
-    --fg: #ece9f3;
-    --muted: #9b95a8;
-    --tile: rgba(255, 255, 255, 0.06);
-    --tile-hover: rgba(255, 255, 255, 0.11);
-    --tile-active: rgba(255, 255, 255, 0.18);
-    --row-hover: rgba(255, 255, 255, 0.07);
-    --row-active: rgba(255, 255, 255, 0.14);
-    --field: rgba(255, 255, 255, 0.07);
-    --field-focus: rgba(255, 255, 255, 0.13);
-    --shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
-    --menu-bg: #2a2733;
-    --divider: rgba(255, 255, 255, 0.08);
-    --tint: 12%;
-    --btn-hover: rgba(255, 255, 255, 0.1);
-    color-scheme: dark;
-  }
-}

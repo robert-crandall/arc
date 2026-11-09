@@ -21,21 +21,14 @@
      The width is the fallback; where anchor positioning works the patch spans
      the sidebar minus --arcfox-nav-row, the space Arc's nav buttons take. */
   --arcfox-titlebar-width: 150px;
+  --arcfox-titlebar-height: 40px;
   --arcfox-nav-row: 104px;
-  /* Must match ArcFox's layout: row starts 40px into the sidebar, 30px tall. */
-  --arcfox-ext-top: 40px;
-  --arcfox-ext-height: 30px;
-  --arcfox-ext-tile: rgba(255, 255, 255, 0.22);
-  --arcfox-ext-hover: rgba(0, 0, 0, 0.06);
-  --arcfox-ext-active: rgba(0, 0, 0, 0.1);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --arcfox-ext-tile: rgba(255, 255, 255, 0.06);
-    --arcfox-ext-hover: rgba(255, 255, 255, 0.11);
-    --arcfox-ext-active: rgba(255, 255, 255, 0.16);
-  }
+  /* Must match ArcFox's layout: row starts 90px into the sidebar (after nav + 44px address bar), 32px tall. */
+  --arcfox-ext-top: 90px;
+  --arcfox-ext-height: 32px;
+  --arcfox-ext-tile: transparent;
+  --arcfox-ext-hover: rgba(255, 255, 255, 0.10);
+  --arcfox-ext-active: rgba(255, 255, 255, 0.16);
 }
 
 /* ---------- Arc's background, for Firefox's own panels ---------- */
@@ -45,19 +38,13 @@
    as an invisible marker (background.js) and it's decoded here. Values mirror
    shared/theme.css. */
 :root {
-  --arcfox-base: #efedf5;
-  --arcfox-tint: 16%;
+  --arcfox-base: #222638;
+  --arcfox-tint: 14%;
   --arcfox-space: #af51f5;
   --arcfox-panel-bg: color-mix(in srgb, var(--arcfox-space) var(--arcfox-tint), var(--arcfox-base));
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --arcfox-base: #1c1a22;
-    --arcfox-tint: 12%;
-  }
-}
-
+/* One zero-width character per space color (see background.js). */
 #main-window[titlepreface*="\200C"] { --arcfox-space: #37adff; } /* blue */
 #main-window[titlepreface*="\200D"] { --arcfox-space: #00c79a; } /* turquoise */
 #main-window[titlepreface*="\2060"] { --arcfox-space: #51cd00; } /* green */
@@ -155,7 +142,7 @@
   top: 0 !important;
   left: 0 !important;
   width: var(--arcfox-titlebar-width) !important;
-  height: var(--arcfox-ext-top) !important;
+  height: var(--arcfox-titlebar-height) !important;
   min-height: 0 !important;
   margin: 0 !important;
   border: 0 !important;
@@ -225,7 +212,7 @@
   /* Same width as Arc's own panel (drag the edge to change both). Firefox
      asks for 400px for the AI chat; Arc's width wins. */
   min-width: var(--arcfox-sidebar-min) !important;
-  padding-block-start: var(--arcfox-ext-top) !important;
+  padding-block-start: var(--arcfox-titlebar-height) !important;
 }
 
 /* Arc's own small windows (command bar, space editor) are popups: no toolbar. */
@@ -251,25 +238,38 @@
   position: fixed !important;
   z-index: 3 !important;
   top: var(--arcfox-ext-top) !important;
-  left: 8px !important;
-  width: calc(var(--arcfox-sidebar-width) - 16px) !important;
-  max-width: calc(100vw - 16px) !important;
+  left: 10px !important;
+  width: calc(var(--arcfox-sidebar-width) - 20px) !important;
+  max-width: calc(100vw - 20px) !important;
   height: var(--arcfox-ext-height) !important;
   min-height: 0 !important;
   margin: 0 !important;
-  padding: 0 !important;
+  padding: 0 6px !important;
   border: 0 !important;
   background: transparent !important;
   box-shadow: none !important;
+  color: rgba(255, 255, 255, 0.85) !important;
+  --toolbar-color: rgba(255, 255, 255, 0.85);
+  --lwt-toolbarbutton-icon-fill: rgba(255, 255, 255, 0.85);
+  justify-content: center !important;
+  align-items: center !important;
+  gap: 4px !important;
+  transition: opacity 100ms ease !important;
   --toolbarbutton-outer-padding: 0px;
-  --toolbarbutton-inner-padding: 7px;
+  --toolbarbutton-inner-padding: 6px;
   --toolbarbutton-border-radius: 8px;
   --toolbarbutton-hover-background: var(--arcfox-ext-hover);
   --toolbarbutton-active-background: var(--arcfox-ext-active);
   --toolbar-start-end-padding: 0px;
 }
 
-/* Flatten the button group so every button is an equal tile in one row. */
+/* Hide the floating extension strip while the address bar dropdown is open. */
+#main-window[titlepreface*="\200B"] #nav-bar {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* Flatten the button group so every button sits inside the centered pill row. */
 #nav-bar-customization-target {
   display: contents !important;
 }
@@ -286,26 +286,22 @@
 #nav-bar :is(.unified-extensions-item, .webextension-browser-action),
 #unified-extensions-button,
 #PanelUI-button {
-  flex: 1 1 0 !important;
+  flex: 0 1 32px !important;
   min-width: 0 !important;
   margin: 0 !important;
-  margin-inline-start: 4px !important;
-  height: var(--arcfox-ext-height) !important;
-}
-#nav-bar :is(.unified-extensions-item, .webextension-browser-action, #unified-extensions-button, #PanelUI-button):not([hidden]):first-of-type {
-  margin-inline-start: 0 !important;
+  height: calc(var(--arcfox-ext-height) - 4px) !important;
 }
 #PanelUI-button {
   padding: 0 !important;
   border: 0 !important;
 }
 
-/* The tile: stretch each button's visual box across its slot. */
+/* Compact centered icon slots inside the unified .ext-slot pill. */
 #nav-bar :is(.unified-extensions-item, .webextension-browser-action) .toolbarbutton-1,
 #unified-extensions-button,
 #PanelUI-menu-button {
   width: 100% !important;
-  height: var(--arcfox-ext-height) !important;
+  height: calc(var(--arcfox-ext-height) - 4px) !important;
   padding: 0 !important;
   justify-content: center !important;
 }
@@ -313,10 +309,10 @@
 #unified-extensions-button > .toolbarbutton-icon,
 #PanelUI-menu-button > :is(.toolbarbutton-badge-stack, .toolbarbutton-icon) {
   width: 100% !important;
-  height: var(--arcfox-ext-height) !important;
-  padding-block: calc((var(--arcfox-ext-height) - 16px) / 2) !important;
+  height: calc(var(--arcfox-ext-height) - 4px) !important;
+  padding-block: calc((var(--arcfox-ext-height) - 20px) / 2) !important;
   padding-inline: calc(50% - 8px) !important;
-  border-radius: 8px !important;
+  border-radius: 7px !important;
   background-color: var(--arcfox-ext-tile);
   justify-content: center !important;
 }
@@ -366,8 +362,8 @@
   }
   #nav-bar {
     position-anchor: --arcfox-sidebar !important;
-    left: calc(anchor(left) + 8px) !important;
-    right: calc(anchor(right) + 8px) !important;
+    left: calc(anchor(left) + 10px) !important;
+    right: calc(anchor(right) + 10px) !important;
     width: auto !important;
   }
 }
