@@ -194,6 +194,7 @@ svg { display: block; }
 }
 .suggest li.selected .s-chip { background: #fff; }
 .s-icon { width: 14px; height: 14px; display: grid; place-items: center; color: var(--muted); font-size: 14px; }
+.suggest li.selected .s-icon { color: var(--base); }
 .s-icon img { width: 14px; height: 14px; }
 .s-icon .letter { width: 14px; height: 14px; font-size: 8px; border-radius: 3px; }
 .s-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
