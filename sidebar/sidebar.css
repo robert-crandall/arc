@@ -312,7 +312,7 @@ body.drag-active .fav-drop-text { display: inline; }
 .space-head .chevron { display: none; flex: none; width: 16px; height: 16px; place-items: center; color: var(--muted); }
 body.pins-collapsed .space-head .chevron { display: grid; }
 .space-head .chevron svg { width: 12px; height: 12px; }
-.space-head .space-emoji {
+.space-head .space-emoji:not([hidden]) {
   width: 20px;
   height: 20px;
   border-radius: 6px;

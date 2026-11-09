@@ -38,7 +38,7 @@
    as an invisible marker (background.js) and it's decoded here. Values mirror
    shared/theme.css. */
 :root {
-  --arcfox-base: #222638;
+  --arcfox-base: #141720;
   --arcfox-tint: 14%;
   --arcfox-space: #af51f5;
   --arcfox-panel-bg: color-mix(in srgb, var(--arcfox-space) var(--arcfox-tint), var(--arcfox-base));
@@ -58,9 +58,12 @@
 #sidebar-box,
 #sidebar {
   background-color: var(--arcfox-panel-bg) !important;
+  color: #f5f7fa !important;
+  color-scheme: dark !important;
 }
 :root {
   --sidebar-background-color: var(--arcfox-panel-bg) !important;
+  --sidebar-text-color: #f5f7fa !important;
 }
 
 @-moz-document url-prefix("chrome://browser/content/places/"),
@@ -77,6 +80,8 @@
   tree > treechildren {
     background: transparent !important;
     background-color: transparent !important;
+    color: #f5f7fa !important;
+    color-scheme: dark !important;
   }
 }
 
