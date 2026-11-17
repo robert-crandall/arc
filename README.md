@@ -76,17 +76,17 @@ Shortcuts can be changed in `about:addons` → ⚙ → *Manage Extension Shortcu
 
 Arcsidebar needs **Firefox 155 or newer** (desktop; Firefox for Android has no sidebar).
 
-1. Download the latest signed `.xpi` from [Releases](https://github.com/trajche/arc/releases) and open it in Firefox. It updates itself from there (Firefox checks daily; `about:addons` → ⚙ → *Check for Updates* forces it).
+1. Download the latest signed `.xpi` from [Releases](https://github.com/robert-crandall/arc/releases) and open it in Firefox. It updates itself from there (Firefox checks daily; `about:addons` → ⚙ → *Check for Updates* forces it).
 2. **Give Arc the whole window** (hides Firefox's tab strip and toolbar). Run the setup for your system — it finds the Firefox profile with Arc and adds Arc's layout, keeping any customizations you already have:
 
    **macOS / Linux** (Terminal)
    ```sh
-   curl -fsSL https://raw.githubusercontent.com/trajche/arc/main/extras/setup/arc-setup.txt | bash
+   curl -fsSL https://raw.githubusercontent.com/robert-crandall/arc/main/extras/setup/arc-setup.txt | bash
    ```
 
    **Windows** (PowerShell)
    ```powershell
-   irm https://raw.githubusercontent.com/trajche/arc/main/extras/setup/arc-setup.ps1 | iex
+   irm https://raw.githubusercontent.com/robert-crandall/arc/main/extras/setup/arc-setup.ps1 | iex
    ```
 
    Then quit Firefox and open it again. Run it again after updating Arc. To remove Arc's layout: add `| bash -s -- --uninstall` on macOS/Linux, or run `& ([scriptblock]::Create((irm <url>))) -Uninstall` on Windows. The scripts are [`arc-setup.txt`](extras/setup/arc-setup.txt) and [`arc-setup.ps1`](extras/setup/arc-setup.ps1) if you'd rather read and run them yourself.

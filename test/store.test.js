@@ -524,4 +524,24 @@ test("reconciles child subtab parent across session-restore ID changes and prese
   assert.ok((await browser.tabs.query({ windowId: 1 })).some((t) => t.id === scratchBar.id));
 });
 
+test("manifest update_url and updates.json point to robert-crandall/arc instead of upstream trajche/arc", () => {
+  const manifest = JSON.parse(fs.readFileSync(new URL("../manifest.json", import.meta.url), "utf8"));
+  const updates = JSON.parse(fs.readFileSync(new URL("../updates.json", import.meta.url), "utf8"));
+  assert.equal(
+    manifest.browser_specific_settings?.gecko?.update_url,
+    "https://raw.githubusercontent.com/robert-crandall/arc/main/updates.json"
+  );
+  assert.ok(
+    manifest.version.localeCompare("0.7.1", undefined, { numeric: true }) > 0,
+    `manifest version ${manifest.version} must be greater than upstream 0.7.1`
+  );
+  for (const entry of updates.addons?.["arc@sidebar"]?.updates || []) {
+    assert.ok(
+      entry.update_link.startsWith("https://github.com/robert-crandall/arc/releases/"),
+      `unexpected update_link: ${entry.update_link}`
+    );
+  }
+});
+
+
 
