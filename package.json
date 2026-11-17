@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git@github.com:trajche/arc.git"
+    "url": "git@github.com:robert-crandall/arc.git"
   },
   "type": "module",
   "scripts": {

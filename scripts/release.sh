@@ -10,7 +10,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-REPO="trajche/arc"
+REPO="robert-crandall/arc"
 ADDON_ID="arc@sidebar"
 
 [ -z "$(git status --porcelain)" ] || { echo "Commit or stash your changes first." >&2; exit 1; }
